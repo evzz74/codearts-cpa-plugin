@@ -4,7 +4,7 @@
 //   - onAnswer:  {"text":"增量","custom_extra_info":...}
 //   - reasoning / thinking: 思考链增量
 //   - done:      {"error_code":"0","error_msg":"","related_question_answer":[...],"response_message_id":"..."}
-//                 related_question_answer 是「相关追问」建议，不是正文，解析时忽略。
+//     related_question_answer 是「相关追问」建议，不是正文，解析时忽略。
 //   - error / heartbeat 等
 //
 // 另：部分帧可能直接给出 structured QA 对象 {question,options,answer}（无 text 字段）。
@@ -451,13 +451,17 @@ func Aggregate(r io.Reader, model string) (map[string]any, error) {
 			message["content"] = nil
 		}
 	}
-	return map[string]any{
+	result := map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": rc.Finish}},
-	}, nil
+	}
+	if rc.Usage != nil {
+		result["usage"] = rc.Usage
+	}
+	return result, nil
 }
 
 // Stream 实时转换 SSE，保证至少一个 [DONE]。

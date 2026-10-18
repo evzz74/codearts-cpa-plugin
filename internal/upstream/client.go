@@ -240,13 +240,25 @@ func (c *Client) BuildAuthorizeURL(cfg LoginConfig, ticketID, codeChallenge, cod
 // dpopPrivateJWK 可传 nil：此时随机生成一对，并把公钥随请求发出。调用方必须把
 // 同一对私钥与 refresh_token 一起持久化，否则后续刷新会被 STS 拒
 // （refresh_token 与 DPoP 公钥绑定）。
+//
+// redirect_uri 必须与 authorize 时完全一致，因此这里固定回环地址；容器部署
+// 请用 ExchangeCodeAt，它允许指定浏览器实际使用的 host。
 func (c *Client) ExchangeCode(ctx context.Context, cfg LoginConfig, code, codeVerifier string, port int, dpopPrivateJWK DPoPPrivateJWK) (*TokenResponse, error) {
+	return c.ExchangeCodeAt(ctx, cfg, code, codeVerifier, "127.0.0.1", port, dpopPrivateJWK)
+}
+
+// ExchangeCodeAt 与 ExchangeCode 相同，但 redirect_uri 的 host 可指定。
+// 容器里 127.0.0.1 不代表浏览器可达地址，需要用宿主 IP 或发布的主机名。
+func (c *Client) ExchangeCodeAt(ctx context.Context, cfg LoginConfig, code, codeVerifier, host string, port int, dpopPrivateJWK DPoPPrivateJWK) (*TokenResponse, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	form := url.Values{}
 	form.Set("client_id", cfg.ClientID)
 	form.Set("code", code)
 	form.Set("code_verifier", codeVerifier)
 	form.Set("grant_type", "authorization_code")
-	form.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d%s", port, cfg.RedirectPath))
+	form.Set("redirect_uri", fmt.Sprintf("http://%s:%d%s", host, port, cfg.RedirectPath))
 	kp, err := dpopKeyPairFor(dpopPrivateJWK)
 	if err != nil {
 		return nil, err
@@ -694,9 +706,15 @@ func PKCE() (verifier, challenge string, err error) {
 		return "", "", err
 	}
 	verifier = base64.RawURLEncoding.EncodeToString(b)
+	return verifier, PKCEChallenge(verifier), nil
+}
+
+// PKCEChallenge 由既有 verifier 重算 code_challenge（S256）。
+// 登录会话把 verifier 当作密钥保存，授权链接要用的 challenge 在需要时重算，
+// 避免同一会话里出现两份可能不一致的派生值。
+func PKCEChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(sum[:])
-	return verifier, challenge, nil
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // RandomHex 生成 n 字节的 hex 随机串。

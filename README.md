@@ -1,192 +1,259 @@
-# CodeArts2API
+# CodeArts2API — CLIProxyAPI 原生插件
 
-> 华为云 CodeArts Agent（盘古助手/码道）的 OpenAI 兼容代理。**无需运行 CodeArts Agent
-> 客户端**，纯 Go 直连华为云 API，多账号轮转 + token 自动续期 + WebUI。
+把华为云 **CodeArts Agent**（盘古助手 / 码道）的账号接入
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)，让任何 OpenAI 兼容客户端
+都能直接使用 CodeArts 的模型。本仓库现在**只提供 CLIProxyAPI 原生插件形态**
+（`codearts.dll` / `codearts.so`），不再提供独立 HTTP 服务。
 
-## 参考项目
+插件注册为 CPA 的 `codearts` 提供方，具备以下能力：
 
-本项目是 [Sliverkiss](https://github.com/Sliverkiss) 同系列开源项目的延伸实现，架构与运维形态参考了以下仓库：
+| 能力 | 说明 |
+|------|------|
+| `model_provider` | 静态模型表 + 按账号发现的上游模型 |
+| `auth_provider` | OAuth 登录、凭证解析、token 刷新 |
+| `executor` | `chat-completions` 协议，支持流式、工具调用、推理内容 |
+| `management_api` | 账号管理 API + 内嵌管理面板（菜单 **CodeArts**） |
 
-- [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) — WorkBuddy CN OpenAI 兼容反代（账号池 / 轮转 / 签到架构）
-- [traework2api](https://github.com/Sliverkiss/traework2api) — TRAE Work OpenAI 兼容反代（零依赖 Go 骨架）
-- [qoderwork2api](https://github.com/Sliverkiss/qoderwork2api) — QoderWork CN OpenAI 兼容反代（OAuth 授权流程）
+凭证文件、刷新调度、请求转发全部由 CPA 宿主负责；插件只通过宿主回调读写 auth，
+不落盘、不自行监听端口。
 
-感谢原作者的开源与优秀设计。
+## 构建
 
-## 快速开始（Ubuntu / Linux）
-
-```bash
-make linux            # bin/ 下 4 个 Linux 静态二进制
-make test
-```
-
-### 登录（华为云账号）
-
-```bash
-# 本机有浏览器
-./login.sh
-
-# 服务器（无浏览器）：打印链接，任意机器浏览器打开，ticket 轮询下发
-./login.sh -print-only
-
-# 凭证落盘 auths/codearts-{user_id}.json
-```
-
-### 启动
+要求 Go 1.26+（SDK `github.com/router-for-me/CLIProxyAPI/v7` 要求 Go ≥ 1.26）、cgo 与
+系统 C 编译器。
 
 ```bash
-cp config.example.json config.json
-export CA2A_API_KEY=你的随机密钥
-./bin/codearts2api -config config.json
+# Linux（产物 codearts.so）
+CGO_ENABLED=1 go build -buildmode=c-shared -o codearts.so ./plugin/codearts
+
+# Windows（产物 codearts.dll，需要 gcc，例如 MinGW-w64 或 zig cc）
+set CGO_ENABLED=1
+go build -buildmode=c-shared -o codearts.dll ./plugin/codearts
 ```
 
-### 验证 + WebUI
+`make linux` / `make windows` 等价于上面的命令。产物旁会生成同名 `.h`
+头文件，两者都不要提交到仓库（已在 `.gitignore` 中忽略）。
+
+## 安装
+
+1. 把 `codearts.so`（Linux）或 `codearts.dll`（Windows）放进 CPA 的插件目录
+   （默认 `plugins/`）。
+2. 在 `config.yaml` 中启用插件系统与该插件：
+
+   ```yaml
+   plugins:
+     enabled: true
+     dir: plugins
+     configs:
+       codearts:
+         enabled: true
+   ```
+
+3. 重启 CPA。`GET /v1/models` 应能看到 CodeArts 模型（默认静态列表：
+   `GLM-5.2`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`deepseek-v4-flash-0731`、
+   `deepseek-v4-pro-0813`、`glm-5.3-flash`；有账号后按账号上报的目录覆盖）。
+
+在 CPA 管理端插件页可以看到 **CodeArts** 资源菜单，点开就是账号面板。
+
+## 登录账号
+
+登录流程见 origin 项目（`HITZY2002/codearts2api`）的 `cmd/login` + `login.sh`：
+华为云 OAuth2 + PKCE + DPoP，双通道取凭证。插件通过宿主的**标准插件登录链路**
+（`/v0/management/codearts-auth-url` + `/get-auth-status`）驱动，不碰宿主的
+`/v0/management/oauth-callback`。
+
+### 方式一：面板 OAuth 登录
+
+1. 打开 CPA 管理面板 → CodeArts → **OAuth 登录** → **开始授权**。
+2. 新窗口里用华为云账号登录。插件在本机监听 `127.0.0.1:<随机端口>` 接回调：
+   - 第一跳带 `secret` + `redirect` → 插件记下 portal 下发的 secret 并 307 跳回授权页；
+   - 第二跳带 `code` → 换取 STS 临时 AK/SK 并写入 CPA auth 目录
+     （文件名 `codearts-<user_id>.json`）。
+3. 面板自动轮询登录状态，成功后列表刷新出新账号。若没有自动刷新，点 **检查登录状态**。
+
+**服务器部署（浏览器在另一台机器）**：把授权完成后地址栏里的整段回调 URL 粘到
+**提交回调 URL**。第一次多半返回「继续授权」链接（portal 的 secret+redirect 那一跳），
+打开它继续授权；第二次带上 `code` 后插件会自动完成登录。
+这条路径不依赖浏览器能访问回调端口，因为插件同时用 portal 的 secret 轮询
+`/v1/login/ticket` 拿凭证。
+
+#### Docker 部署（必读）
+
+容器里的 `127.0.0.1` 与宿主机的 `127.0.0.1` 不是同一个网络命名空间，随机回调端口也没有
+通过 `-p` 发布，因此**浏览器回调通道在容器中不可用**——portal 跳到
+`http://127.0.0.1/oauth/callback` 时本来就打不开。
+
+插件对此已经适配：
+
+- 登录监听改为绑定 `0.0.0.0`（仍只响应插件自己的回调路径）；
+- `/bootstrap` 返回 `ticket_only: true`，面板据此**不再注入无用的回调 iframe**，
+  并在授权弹窗里提示“容器部署，自动用 ticket 轮询”；
+- 登录完成完全由 **ticket 轮询**驱动，不依赖浏览器能否连上容器端口。
+
+使用时只要：点「开始授权」→ 华为云登录 → **保持面板打开**，插件会自动取回凭证。
+
+如果确实想让浏览器回调也生效，需要把 loopback 端口发布出来并告诉插件真实主机名：
 
 ```bash
-curl http://127.0.0.1:7866/healthz
-curl http://127.0.0.1:7866/v1/models -H "Authorization: Bearer $CA2A_API_KEY"
-curl -X POST http://127.0.0.1:7866/v1/chat/completions \
-  -H "Authorization: Bearer $CA2A_API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"snap-chat","messages":[{"role":"user","content":"你好"}]}'
+# 1) 发布一段端口范围（选一个不冲突的区间）
+docker run -p 18317:8317 -p 40000-40100:40000-40100 ...
+
+# 2) 让插件用它生成 redirect_uri（必须是浏览器可达的地址）
+docker run -e CODEARTS_CALLBACK_HOST=172.20.0.2 ...
 ```
 
-浏览器打开 **http://127.0.0.1:7866/** 即 WebUI：账号/token 状态、对话测试（流式/非流式）。多轮上下文按账号自动续接（chat_id 分组）；也可用请求头
-`X-Codearts-Chat-Id: <chatId>` 或 body 里 `conversation_id` 显式指定会话。
+> 注意：`CODEARTS_CALLBACK_HOST` 只影响插件自己生成的 `redirect_uri` 与回调提示；
+> portal 侧最终怎么跳仍由华为云决定，所以多数情况下**留空、直接用 ticket 轮询**更省事。
 
-流式请求设置 `"stream_options":{"include_usage":true}` 后，会在 `[DONE]` 前返回一次
-`choices: []` 的 usage chunk；其余 chunk 的 `usage` 为 `null`。未启用时不返回 usage。
-流式和非流式均优先使用上游 usage；上游未提供时按文本长度估算，估算值不是精确 token 计数。
+> 说明：宿主自带的「回调 URL」输入框由 CPA 的 TUI 实现，它把 `provider` 写成空串，
+> 宿主会回 `400 unsupported provider`，所以那个框对本插件不可用（宿主已知问题）。
+> 请始终用插件面板里的入口；该入口走的是宿主正常工作的插件登录路由。
 
-工具调用支持 `tool_choice` 的 `auto` / `none` / `required` 及指定函数对象。
-指定函数时，网关只向上游发送该函数的定义，并转换为上游支持的字符串 `required`；
-指定函数不存在或重复定义时返回 400。上游 `InferHub.001001005` 参数错误也返回 400，
-不轮换、不冷却账号；若流式响应已开始，则用 SSE 错误事件结束，同样不处罚账号。
+### 方式二：导入已有凭证
 
-### 模型列表与限时福利
+面板 **导入凭据** 里粘贴一份 `codearts-*.json` 文档即可。字段：
 
-`/v1/models` 返回上游**精确模型 ID**（区分大小写，如 `GLM-5.2`、`Qwen3-VL-235B`），
-同时为含大写的 ID 补一条小写别名（`glm-5.2`），两者都能用于聊天。限时福利
-（免费套餐）模型额外带 `benefit: true` 标记，聊天时服务端会自动追加上游要求的
-`maas_type: benefit` 请求头（按发起请求的账号判定，多账号套餐不同也不会串——
-列表是各账号可用模型的并集，实际路由会优先挑目录里真有这个模型的账号）。
+```json
+{
+  "user_id": "...",
+  "user_name": "...",
+  "domain_id": "...",
+  "cloud_dragon_token": "...",
+  "access_key_id": "...",
+  "secret_access_key": "...",
+  "expiration": "2030-01-01T00:00:00Z",
+  "refresh_token": "...",
+  "code_verifier": "...",
+  "client_id": "codearts-agent",
+  "dpop_private_key": { "kty": "EC", "...": "..." }
+}
+```
 
-福利模型列表随免费套餐轮换，用下面这条命令核对当前账号实际可用的模型：
+`refresh_token` 与登录时的 `client_id`、DPoP 私钥绑定，三者必须一起迁移，否则刷新会被
+STS 拒绝。插件刷新后会写回轮转后的新 `refresh_token`，并保留文件中的未知字段与
+`metadata`。
+
+## 管理 API
+
+所有路由都在 `/v0/management/plugins/codearts` 下，**读写都需要鉴权**：带上
+`Authorization: Bearer <management key>`。宿主若已配置管理密钥，插件会用同一个密钥
+校验；也可以用环境变量 `CODEARTS_MANAGEMENT_KEY` 单独指定。未配置任何密钥时由宿主
+管理中间件负责鉴权。
+
+| 方法与路径 | 作用 |
+|-----------|------|
+| `GET /accounts` | 账号列表（uid、昵称、过期时间、是否禁用） |
+| `GET /credentials?auth_index=` | 导出单个账号的凭证文档（含密钥，谨慎使用） |
+| `POST /enabled` | `{"auth_index":"...","enabled":true|false}` 启用/禁用账号 |
+| `GET /credits?auth_index=` | 查询积分活动（可省略 `auth_index` 查全部） |
+| `GET /stats?auth_index=` | 套餐 / 积分 / 周期 token 统计（码道控制台同源接口） |
+| `GET /usage?auth_index=` | 本机用量账本：今日、按天、按模型、最近明细 |
+| `POST /checkin` | 领取每日签到积分，body 可带 `auth_index` |
+| `POST /keepalive` | 刷新 token；body 可带 `auth_index`，省略则全部账号 |
+| `POST /import` | `{"json":{...}}` 导入凭证 |
+| `POST /oauth/start` | 发起登录，返回 `url` 与 `state`（等价于宿主的 `codearts-auth-url`） |
+| `POST /oauth/poll` | `{"session_id":"<state>"}` 查询登录状态（等价于 `get-auth-status`） |
+| `POST /oauth/import-callback` | `{"session_id":"...","callback_url":"..."}` 远程回调 |
+
+未鉴权资源路由（`/v0/resource/plugins/codearts/...`，宿主只允许 GET）：
+
+| 路径 | 作用 |
+|------|------|
+| `GET /bootstrap` | 返回宿主端点（`auth_url`、`auth_status_url`）、provider、在途登录会话的 `port`/`session_id` |
+| `GET /call?op=accounts\|credits\|stats\|usage&auth_index=` | 面板用的免密钥只读代理（不含任何密钥） |
+| `GET /post/callback?state=&callback_url=` | 把浏览器观察到的回调喂进登录会话（`/oauth/import-callback` 的免密钥等价物） |
+| `GET /ping` | 探活 |
+
+面板本身在 `/v0/resource/plugins/codearts/panel`（资源路由，由宿主渲染进管理控制台）。
+
+> **不要用 CPA 自带的「回调 URL」输入框提交本插件的回调**。那个框由宿主 TUI 实现，
+> 它把 `provider` 写成空串，宿主会回 `400 unsupported provider`（宿主已知问题）。
+> 请用插件面板里的登录入口，或调用上面的 `/post/callback`。
+
+### 面板说明
+
+版式对齐 `zidanefaqih/codebuddy-intl-cpa` 的 CodeBuddy 面板：跟随 CPA 主题
+（light / white / dark）、顶部语言切换、账号卡片网格、toast 提示、模态框。
+
+- **界面语言默认中文**，右上角可切 English（选择记在 `localStorage`）。
+- 从 CPA 主面板内嵌打开时自动取用管理密钥，无需手填；也可用 `?key=<management key>` 打开。
+- 账号卡片显示状态徽章（正常 / 已过期 / 已禁用 / 不可用）、uid、到期与更新时间，
+  操作按钮：积分、签到、保活、启用-禁用、显示凭据。
+- 顶部批量操作：全部签到、全部保活、刷新数据；进入页面自动加载一次，之后每 30 秒静默刷新。
+- **控制台概览**（仿码道控制台，多账号时用「积分用量」右上角的下拉切换账号）：
+  - **积分用量**：环形扇形图显示已用百分比，下方给出总积分 / 已用 / 剩余、各积分包用量条、
+    统计周期（积分包有效期）与本期 token。数据来自码道官方统计接口 `statistics/plugin`。
+  - **今日 tokens 消耗**：今日总 tokens / 请求数 / 输入 / 输出，加近 14 天柱状图与模型 Top5。
+  - **用量记录**：可切「明细」（时间、模型、输入、输出、总 tokens、耗时、状态）与「按天」。
+  - 这两块的 token 数由插件本地记账（只有经过本 CPA 的请求才算）；上游没返回 usage 时
+    按字符数估算，明细里会标 **估算**。账本保存在 `<用户配置目录>/codearts2api/usage-ledger.json`，
+    可用环境变量 `CODEARTS_USAGE_DIR` 改位置。
 
 ```bash
-go run ./cmd/models                 # 账号可用模型（内置 + 福利）
-go run ./cmd/models -json           # 机器可读
-go run ./cmd/models -claim          # 先领取限时福利再查询（幂等，属写操作）
+KEY=your-management-key
+curl -s http://127.0.0.1:8317/v0/management/plugins/codearts/accounts \
+  -H "Authorization: Bearer $KEY"
+curl -s -X POST http://127.0.0.1:8317/v0/management/plugins/codearts/keepalive \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{}'
 ```
 
-限时福利模型**必须先领取才能调用**：未领取时上游一律返回
-`InferHub.4004.200 benefit not found`（实测）。领取是幂等操作，官方客户端打开模型
-菜单时也会调用，因此服务默认会领取（`benefit_auto_claim: true`）。不想让服务写账号
-可显式关闭：
+## 模型与请求
 
-```jsonc
-"benefit_auto_claim": false   // 或 CA2A_BENEFIT_AUTO_CLAIM=0
-```
+- 端点：沿用 CPA 的 `/v1/chat/completions`、`/v1/messages` 等；插件声明
+  `chat-completions` 输入/输出格式，其他协议由宿主转换。
+- 模型 ID 区分大小写（`GLM-5.2`、`Qwen3-VL-235B`）。可以用 CPA 的
+  `oauth-model-alias` 配置给模型起别名，插件会按别名反查真实模型名。
+- 工具调用：支持 `tool_choice` 的 `auto` / `none` / `required` 及指定函数；指定函数时
+  只向上游发送该函数定义，函数不存在或重复定义返回 400。
+- 推理内容：上游 `delta.reasoning_content` 会原样透传。
+- 流式：`stream: true` 时由插件逐块 `emit` 给宿主；上游中断会补一条 SSE 错误事件并以
+  错误结束该流，避免客户端把截断的流当成正常结束。
+- 图片/多模态：`content` 数组中的 `text` 段会被拼接为文本发送。
 
-关闭后福利模型仍会出现在 `/v1/models`，但调用必然失败。
+## 账号维护
 
-### 模型可用性探测
-
-`/v1/models` 只列**真实可用**的模型：上游的模型发现（agent-center / builtin / 福利
-网关）会列出当前账号根本没注册的模型（实测 `GLM-5.2-ArkTS-SPARK`、`OpenPangu-2.0-Pro`
-等返回 `InferHub.002002009.404`）。服务会周期性用一条最小请求探测并缓存结论，
-真实请求失败也会被学习（`not registered` / `benefit not found` 记为账号能力问题，
-不会给健康账号记错误冷却）。探测结果缓存 30 分钟。
-
-### API Key 必填
-
-服务没有 API Key 会**拒绝启动**（旧版本会回退到公开的 `dummy-key-for-codearts`，
-等于把接口暴露给任何人）。三选一：
-
-```bash
-# 1) env（推荐，配合 .env / systemd EnvironmentFile）
-export CA2A_API_KEY=$(openssl rand -hex 24)
-# 2) config.json 的 "api_key" 字段
-# 3) docker compose 的 .env
-```
-
-### 账号续期
-
-`refresh_token` 与登录时的 `client_id`、DPoP 私钥绑定，因此凭证文件会保存
-`client_id` 与 `dpop_private_key`；刷新时原样复用并写回轮转后的新 refresh_token。
-若手工换过 `login_client_id`，老账号仍按自己记录的 client_id 刷新。
-
-### 每日签到与新手积分
-
-服务默认在启动和每次 watchdog 轮询时检查活动，自动领取每日签到积分及
-上游返回的可领取新用户积分。新增账号会在下一次轮询处理；也可在 WebUI
-点击「签到」/「全员签到」，或鉴权调用 `POST /admin/api/checkin`（可传 `{"uid":"账号 ID"}`）。
-领取后必须确认；已领取未确认时只补确认，已确认不重复领取。资格、金额、
-每日刷新和活动起止时间均以上游返回为准，失败会在下一次轮询重试，
-不会因活动接口故障冷却或禁用推理账号。
-
-`credits_auto_claim: false` 或 `CA2A_CREDITS_AUTO_CLAIM=0` 可关闭自动领取，
-`watch.enabled: false` 会关闭整个轮询。手动签到仍可使用。
-这项活动与 `benefit_auto_claim` 的模型 Token 福利独立；面板显示最近领取结果，
-不把领取量或健康账号数当作积分余额。`credit.sh` 查登录态，`apply.sh` 仅续期。
-
-当前[官方每日签到活动](https://support.huaweicloud.com/offers-codeartsagent/codeartsagent_offers_0004.html)
-为已升级积分计费的用户每日发放 1000 积分，30 天有效，活动截止于
-2026-12-31 00:00（UTC+8）；[新用户注册奖励](https://support.huaweicloud.com/price-codeartsagent/codeartsagent_billing_0029.html)
-为 4000 积分。无资格或已自动发放的新手奖励不会再次领取。
-
-## 部署（systemd / Docker）
-
-```bash
-sudo mkdir -p /opt/codearts2api && sudo cp -r bin config.example.json auths /opt/codearts2api/
-sudo cp deploy/codearts2api.service /etc/systemd/system/
-# 编辑 /opt/codearts2api/.env 写 CA2A_API_KEY，改好 config.json
-sudo systemctl daemon-reload && sudo systemctl enable --now codearts2api
-
-# 或 Docker
-export CA2A_API_KEY=你的随机密钥
-mkdir -p auths data
-docker compose up -d --build
-```
-
-## 环境变量配置
-
-除了 `config.json`，还支持以下环境变量覆盖：
-
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
-| `CA2A_API_KEY` | API 访问密钥 | - |
-| `CA2A_LISTEN` | 监听地址 | `:7866` |
-| `CA2A_AUTH_DIR` | 凭证目录 | `./auths` |
-| `CA2A_STATE_FILE` | 状态文件 | `./data/state.json` |
-| `CA2A_DEFAULT_MODEL` | 默认模型 | `glm-5.2` |
-| `CA2A_OAUTH_CALLBACK_HOST` | OAuth 回调主机 | - |
-| `CA2A_WATCH_ENABLED` | 调度器开关 | `true` |
-| `CA2A_WATCH_POLL_MINUTES` | 轮询间隔（分钟） | `30` |
-| `CA2A_WATCH_REFRESH_SKEW` | 提前刷新时间（分钟） | `30` |
-| `CA2A_WATCH_KEEPALIVE_INTERVAL` | 保活间隔（分钟） | `15` |
-| `CA2A_MAX_CONCURRENT` | 单账号最大并发 | `5` |
-| `CA2A_KEEPALIVE_WINDOW` | 保活窗口 | `10m` |
-| `CA2A_BENEFIT_AUTO_CLAIM` | 发现模型时自动领取限时福利（幂等；关闭则福利模型不可用） | `true` |
-| `CA2A_CREDITS_AUTO_CLAIM` | watchdog 自动领取每日签到及新用户积分 | `true` |
-| `CA2A_LOGIN_CLIENT_ID` | WebUI 登录使用的 OAuth client_id | 已有账号的取值，否则 `codearts-agent` |
+- **自动刷新**：CPA 依据 auth 的过期时间与插件返回的 `next_refresh_after` 调度刷新；
+  插件刷新失败返回 502/504（宿主会重试），凭证不可用返回 403（宿主可禁用/要求重登）。
+- **签到**：面板「签到」或 `POST /checkin`。领取后需确认，重复点击是幂等的。
+- **保活**：面板「全部保活」或 `POST /keepalive`，等价于立即刷新一次 token。
+- **禁用**：面板「禁用」或 `POST /enabled`。禁用只写 auth 的 `disabled` 标记，
+  不删除凭证，可随时启用。
 
 ## 目录结构
 
 ```
-cmd/server/        HTTP 服务（config + main）
-cmd/login/         华为云 OAuth2 PKCE 登录
-cmd/credit/        账号登录态日报（新增并发信息）
-cmd/apply/         批量 token 续期（使用 pool 包）
-cmd/models/        查看账号可用模型（内置 + 限时福利，可选 -claim 领取）
-internal/auth/     auth 文件读写
-internal/upstream/ 云端客户端（登录/聊天/SSE/模型发现）+ 逆向常量
-internal/pool/     账号池（token 校验/自动刷新/冷却/并发控制）
-internal/scheduler/ token 续期看门狗（新增保活机制）
-internal/server/   OpenAI 兼容路由
-internal/webui/    内嵌 WebUI 控制台
-deploy/            systemd unit 样例
-docs/              逆向过程与接口清单
+plugin/codearts/          插件本体（c-shared 构建入口）
+  main.go                 C ABI 导出与 RPC 分发
+  auth.go                 凭证解析 / 刷新
+  errors.go               错误分类（HTTP 状态映射）、刷新重试、宿主 auth 回调
+  executor.go             chat-completions 执行器（流式 / 非流式）
+  transport.go            宿主 HTTP 回调桥接
+  login.go                OAuth PKCE + DPoP 登录（本机回调 + 远程粘贴）
+  models.go               静态模型与按账号模型发现
+  management.go           管理 API 与面板路由
+  usage.go                用量账本（本地记账 / 按天与按模型汇总 / 落盘）
+  usagehook.go            宿主 usage.handle 回调
+  panel.html              内嵌管理面板
+internal/upstream/        华为云客户端（登录 / 聊天 / SSE / 模型发现 / 签到 / 套餐统计）
+internal/auth/            凭证结构与序列化
+docs/reverse-engineering.md  码道客户端协议逆向记录（实现依据）
 ```
+
+仓库里只有这一个插件：没有独立 HTTP 服务、Docker 镜像或安装脚本，
+`go test ./...` 覆盖的就是要发布的代码。
+
+## 开发与测试
+
+```bash
+go test ./...                             # 全量单测
+go vet ./...
+go build -buildmode=c-shared -o /tmp/codearts.so ./plugin/codearts
+```
+
+`make check` 等价于 `vet + test + build`；`make clean` 删除本地产物。
+
+CI（`.github/workflows/go.yml`）只做插件产物：在 Ubuntu 与 Windows 上分别构建
+`codearts.so` / `codearts.dll`，确认 `cliproxy_plugin_init` 导出存在后上传产物。
 
 ## 免责声明
 
@@ -195,4 +262,3 @@ docs/              逆向过程与接口清单
 ## License
 
 MIT
-

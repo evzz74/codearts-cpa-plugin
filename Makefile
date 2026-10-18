@@ -1,31 +1,28 @@
-.PHONY: all linux windows test docker clean
+.PHONY: all build linux windows test vet check clean
 
 GO ?= go
-BINDIR := bin
 
-all: linux
+all: build
+
+# 产物名随宿主平台走：Windows 是 .dll，其余是 .so
+build:
+	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -o codearts$(if $(filter Windows_NT,$(OS)),.dll,.so) ./plugin/codearts
 
 linux:
-	@mkdir -p $(BINDIR)
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api -buildvcs=false ./cmd/server
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-login -buildvcs=false ./cmd/login
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-credit -buildvcs=false ./cmd/credit
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-apply -buildvcs=false ./cmd/apply
-	@echo "linux binaries -> $(BINDIR)/"
+	@test "$(shell $(GO) env GOOS)" = linux || (echo 'make linux 需要在 linux 上执行'; exit 1)
+	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -o codearts.so ./plugin/codearts
 
 windows:
-	@mkdir -p $(BINDIR)
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api.exe -buildvcs=false ./cmd/server
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-login.exe -buildvcs=false ./cmd/login
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-credit.exe -buildvcs=false ./cmd/credit
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BINDIR)/codearts2api-apply.exe -buildvcs=false ./cmd/apply
-	@echo "windows binaries -> $(BINDIR)/"
+	@test "$(shell $(GO) env GOOS)" = windows || (echo 'make windows 需要在 windows 上执行'; exit 1)
+	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -o codearts.dll ./plugin/codearts
 
 test:
-	$(GO) test ./...
+	$(GO) test -count=1 ./...
 
-docker:
-	docker compose up -d --build
+vet:
+	$(GO) vet ./...
+
+check: vet test build
 
 clean:
-	rm -rf $(BINDIR) data
+	rm -f codearts.so codearts.dll codearts.h
