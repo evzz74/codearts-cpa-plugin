@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 )
 
 func testExecutorRequest(t *testing.T, body string) []byte {

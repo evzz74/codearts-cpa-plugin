@@ -14,8 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -140,7 +139,7 @@ func selectedAccounts(index string) ([]accountFile, error) {
 	}
 	return nil, nil
 }
-func accountStorage(f accountFile) (*auth.Auth, []byte, error) {
+func accountStorage(f accountFile) (*Auth, []byte, error) {
 	raw, err := hostAuthGet(f.AuthIndex)
 	if err != nil {
 		return nil, nil, err
@@ -167,16 +166,16 @@ func accountStorage(f accountFile) (*auth.Auth, []byte, error) {
 	return a, storage, err
 }
 
-var fetchCampaigns = func(ctx context.Context, a *auth.Auth) ([]upstream.CreditCampaign, error) {
+var fetchCampaigns = func(ctx context.Context, a *Auth) ([]upstream.CreditCampaign, error) {
 	return newUpstreamClient(30*time.Second).FetchCreditCampaigns(ctx, upstream.SignCredential{AccessKeyID: a.AccessKeyID, SecretAccessKey: a.SecretAccessKey, SecurityToken: a.CloudDragonTok})
 }
-var claimCheckin = func(ctx context.Context, a *auth.Auth) (upstream.CheckinResult, error) {
+var claimCheckin = func(ctx context.Context, a *Auth) (upstream.CheckinResult, error) {
 	return newUpstreamClient(30*time.Second).Checkin(ctx, upstream.SignCredential{AccessKeyID: a.AccessKeyID, SecretAccessKey: a.SecretAccessKey, SecurityToken: a.CloudDragonTok})
 }
 
 // fetchStatistics reads the platform's own package/credit/token counters. It is a
 // variable so tests can stub the upstream without network access.
-var fetchStatistics = func(ctx context.Context, a *auth.Auth) (upstream.AccountStatistics, error) {
+var fetchStatistics = func(ctx context.Context, a *Auth) (upstream.AccountStatistics, error) {
 	return newUpstreamClient(30*time.Second).FetchStatistics(ctx, upstream.SignCredential{AccessKeyID: a.AccessKeyID, SecretAccessKey: a.SecretAccessKey, SecurityToken: a.CloudDragonTok})
 }
 
@@ -542,5 +541,5 @@ func managementCredentials(authIndex string) []byte {
 	return managementJSON(200, map[string]any{"auth_index": authIndex, "name": files[0].Name, "json": document})
 }
 
-//go:embed panel.html
+//go:embed assets/panel.html
 var codeartsPanel string

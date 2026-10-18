@@ -24,8 +24,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"codearts2api/internal/auth"
 )
 
 // CatalogTTL 账号模型目录的有效期（超过则建议重新发现）。
@@ -286,19 +284,22 @@ func betterModel(a, b ModelInfo) bool {
 	return a.ID != strings.ToLower(a.ID) && b.ID == strings.ToLower(b.ID)
 }
 
+// Account 模型发现需要的凭证字段。调用方传入自己的 auth 结构即可（结构化接口，
+// 所以插件包里的 Auth 不用在本包出现，避免两个包互相引用）。
+type Account interface {
+	AccountID() string
+	Credential() SignCredential
+}
+
 // FetchModels 拉取指定账号当前可用模型（三路合并），并写入该账号的模型目录。
 //
 // 任一路失败只记日志不阻断：福利接口不可用时仍能拿到内置模型。
-func (c *Client) FetchModels(acct *auth.Auth) ([]ModelInfo, error) {
+func (c *Client) FetchModels(acct Account) ([]ModelInfo, error) {
 	if acct == nil {
 		return nil, fmt.Errorf("account required for model fetch")
 	}
-	cred := SignCredential{
-		AccessKeyID:     acct.AccessKeyID,
-		SecretAccessKey: acct.SecretAccessKey,
-		SecurityToken:   acct.CloudDragonTok,
-	}
-	accountID := acct.UserID
+	cred := acct.Credential()
+	accountID := acct.AccountID()
 	var sets [][]ModelInfo
 	if infos, err := c.fetchAgentModels(cred); err != nil {
 		Log("agent models: %v", err)

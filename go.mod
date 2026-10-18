@@ -1,4 +1,4 @@
-module codearts2api
+module github.com/HITZY2002/codearts2api
 
 go 1.26.0
 

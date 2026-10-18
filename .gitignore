@@ -1,23 +1,38 @@
-# 构建产物（不要提交）
+# 构建产物（c-shared 插件库 + 生成的头文件）
 codearts.so
 codearts.dll
+codearts.dylib
 codearts.h
-*.exe
+dist/
+out/
 bin/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
 
 # 本地数据 / 密钥
 auths/
 data/
 config.json
+config.yaml
 .env
+.env.local
 *.key
 *.pem
+
+# Python 脚本缓存
+__pycache__/
+*.pyc
 
 # 编辑器 / 系统
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
 *.swp
+*.swo
 *.bak
 *.backup
 *.backup2

@@ -1,6 +1,6 @@
 # CodeArts CPA Plugin Handoff
 
-更新时间：2026-10-18（第七轮：清理为纯插件仓库，准备上传 GitHub；第六轮：面板对齐码道控制台）
+更新时间：2026-10-18（第八轮：按 codebuddy-intl-cpa 的仓库结构重排；第七轮：清理为纯插件仓库；第六轮：面板对齐码道控制台）
 
 ## 目标
 
@@ -19,14 +19,22 @@
 独立服务形态的 `cmd/`、`internal/pool`、`internal/scheduler`、`internal/server`，以及
 `deploy/`、Docker 文件、shell 脚本、`config.example.json`、`.env.example`、`.vscode/`、
 根目录构建产物和 `.ref/` 临时目录都已删除，可以整体上传 GitHub。
+第八轮把目录结构对齐参考插件（见下），并补上 `VERSION` / `registry.json` / 打包脚本 /
+多平台 CI 发布链路。
 仍未做真实宿主端到端复验（原因见“未完成”）。
 
-### 插件文件（`plugin/codearts/`）
+### 插件文件（`internal/`，package main）
+
+第八轮按 `zidanefaqih/codebuddy-intl-cpa` 的仓库结构重排：插件源码从
+`plugin/codearts/` 移到 `internal/`（`package main`，c-shared 入口同包），
+协议层从 `internal/upstream` 提到根目录 `upstream/`，`internal/auth` 合并进插件包
+（`auth_model.go`），面板移到 `internal/assets/panel.html`。
 
 | 文件 | 职责 |
 |------|------|
-| `main.go` | cgo C ABI（`cliproxy_plugin_init`、`cliproxyPluginCall/Free/Shutdown`）、RPC 分派、注册 metadata 与能力声明 |
+| `main.go` | cgo C ABI（`cliproxy_plugin_init`、`cliproxyPluginCall/Free/Shutdown`）、RPC 分派、注册 metadata 与能力声明（版本号由 `-X main.version` 注入） |
 | `auth.go` | 凭证归属判断、`auth.parse`、`auth.refresh`（保留未知字段 / metadata / DPoP / client_id） |
+| `auth_model.go` | `Auth` 结构、`auths/codearts-*.json` 读写，以及满足 `upstream.Account` 的 `AccountID`/`Credential` |
 | `errors.go` | `pluginError` 状态映射、`rpcErrorEnvelope`、刷新重试、宿主 auth 回调（`hostAuthList/Get/Save`，可被测试替换） |
 | `models.go` | 静态模型、按凭证发现模型、OAuth model alias 反查 |
 | `executor.go` | `chat-completions` 执行器：tools、`tool_choice`、reasoning、非流式 SSE 聚合、异步流式 emit/close |
@@ -35,13 +43,13 @@
 | `management.go` | 管理 API 注册/分发、鉴权、账号操作、内嵌面板 |
 | `usage.go` | 用量账本（按账户/天/模型汇总、估算、落盘） |
 | `usagehook.go` | 宿主 `usage.handle` 回调入口 |
-| `panel.html` | 管理面板（含控制台概览区） |
+| `panel.html` | 管理面板（含控制台概览区，位于 `internal/assets/`） |
 
 ### 本轮行为变更（重要）
 
 **0. 面板对齐码道控制台：积分扇形图 / 今日 tokens / 用量记录（第六轮）**
 
-- 新增上游只读接口 `upstream.FetchStatistics` / `ParseStatistics`（`internal/upstream/statistics.go`），
+- 新增上游只读接口 `upstream.FetchStatistics` / `ParseStatistics`（`upstream/statistics.go`），
   打 `GET /snap-manager/v1/statistics/plugin`，即控制台 `AccountInfoPane` 用的同一个接口。
   - **响应是裸对象**（没有 `code`/`data` 信封），和 `/v1/ops/*` 不同；解析器也兼容信封形态。
   - 积分总额只能取 `metrics[usageTotalPackageCredit]`，**不要**把分类 metric 相加（会重复计算）。
@@ -62,9 +70,9 @@
     被截断的旧记录并入日汇总，保证「今日」数字不会因为截断而变小。
 - 面板新增 `#console` 区块：环形（扇形）百分比 SVG（`pathLength="100"`，`stroke-dasharray` 直接等于百分比）、
   今日 tokens + 14 天柱状图 + 模型 Top5、用量记录表（明细/按天切换）。中英双语、三套主题都覆盖。
-- 测试：`internal/upstream/statistics_test.go`（口径/空包/信封/Token 账户/业务码）、
-  `plugin/codearts/usage_test.go`（汇总、落盘、截断、设备隔离、估算、`/stats`、`/usage`、usage.handle）、
-  `plugin/codearts/panel_test.go`（`node --check` 脚本、DOM 契约、路由接线、i18n 覆盖、payload 形状）。
+- 测试：`upstream/statistics_test.go`（口径/空包/信封/Token 账户/业务码）、
+  `internal/usage_test.go`（汇总、落盘、截断、设备隔离、估算、`/stats`、`/usage`、usage.handle）、
+  `internal/panel_test.go`（`node --check` 脚本、DOM 契约、路由接线、i18n 覆盖、payload 形状）。
 
 
 0. **登录改走宿主标准插件链路（第五轮，方法 A）**
@@ -99,7 +107,7 @@
      因为资源面只收 GET，写操作也走 GET + query，并在响应里加 CORS 头。
    - 面板仍保留「提交回调 URL」输入框（服务器部署场景），但它打到插件自己的
      `/post/callback` 桥，**不再打宿主 `/v0/management/oauth-callback`**。
-   - `internal/upstream` 的 `PKCEChallenge(verifier)` 保留（会话只存 verifier）。
+   - `upstream` 包的 `PKCEChallenge(verifier)` 保留（会话只存 verifier）。
    - 测试：`TestBootstrapPublishesHostLoginRoutes`（端点契约 + 断言不碰 oauth-callback）、
      `TestPollRecoversSessionFromHostMetadata`（宿主改写 state 仍能恢复）、
      `TestResourceBridgeFeedsCallback`（未鉴权桥能喂进 code）。
@@ -124,15 +132,15 @@
    `POST /keepalive` 支持不带 `auth_index` 做全员保活；`/accounts` 增加 `name`、`expires_at`、`expired`、`count`。
 7. **面板重写**：每个账号独立卡片（状态徽章、过期时间、积分/签到/保活/启停/导出凭证）、
    全员保活、登录会话状态保持、回调导入的 `next_url` 链接、清晰的中文/英文错误提示（401 提示填管理密钥）。
-8. **CI 精简**：`.github/workflows/go.yml` 只保留 CPA 插件必需步骤——构建 `codearts.so`/`codearts.dll`
-   并校验 `cliproxy_plugin_init` 导出后上传；已移除 test / race / vet（用户明确要求只保留插件必需步骤）。
-   Windows 不再依赖 `objdump`（windows-latest 没有），改为 PowerShell 解析 PE 导出表，
-   已用真实 DLL 验证：`magic=0x20B sections=23 exports=4`，命中
-   `cliproxy_plugin_init`、`cliproxyPluginCall/Free/Shutdown`。
+8. **CI**：`.github/workflows/go.yml` 曾在第五轮精简成“只构建产物”，第八轮按参考项目
+   换成 `.github/workflows/build.yml`：push/PR 跑 `go test` + `go vet` + registry 校验，
+   再交叉构建 linux/amd64、linux/arm64、darwin/arm64、windows/amd64 并按
+   `codearts_<version>_<goos>_<goarch>.zip` 打包；推 `v*` 标签自动发 Release
+   （带 `checksums.txt` 与打版本号的 `registry.json`）。
 9. **README 重写**：只描述 CPA 插件形态（构建、`plugins.configs.codearts` 配置、安装、面板 OAuth/导入、
    管理 API 表、模型与请求行为、账号维护、目录结构）。
 
-### 测试（`go test -count=1 ./plugin/codearts` 全绿）
+### 测试（`go test -count=1 ./internal` 全绿）
 
 - `core_test.go`：注册/未知方法、凭证归属、刷新保留字段与 metadata、SDK 线路格式与 alias、
   模型发现；新增 `TestRefreshRetriesAndKeepsRotatedToken`、`TestAuthErrorsCarryHostStatus`
@@ -195,34 +203,38 @@ ticket 轮询只认 portal 下发的 secret（本地生成的上游不认）；*
 
 ## 现有公共代码修改
 
-- `go.mod`：`go 1.26.0` + `github.com/router-for-me/CLIProxyAPI/v7 v7.2.30`（SDK 要求 Go ≥ 1.26）
+- `go.mod`：module 改为 `github.com/HITZY2002/codearts2api`；`go 1.26.0` +
+  `github.com/router-for-me/CLIProxyAPI/v7 v7.2.30`（SDK 要求 Go ≥ 1.26）
 - `go.sum`：必需，已随插件一起提交（CI 构建依赖它）
-- `internal/upstream/transport.go`：新增 `Client.SetTransport`
-- `internal/upstream/sse.go`：`RawCompletion` 保留 usage，`Aggregate` 输出 usage
-- `internal/upstream/statistics.go`：新增 `FetchStatistics` / `ParseStatistics`（套餐与积分口径）
-- `Makefile`：`build` / `linux` / `windows` 为 c-shared 插件构建，另有 `test` / `vet` / `check` / `clean`
-- `.gitignore`：忽略 `codearts.so` / `codearts.dll` / `codearts.h`、`auths/`、本地密钥与编辑器目录
-- `README.md`、`.github/workflows/go.yml`：本轮重写/精简
+- `upstream/transport.go`：新增 `Client.SetTransport`
+- `upstream/sse.go`：`RawCompletion` 保留 usage，`Aggregate` 输出 usage
+- `upstream/statistics.go`：新增 `FetchStatistics` / `ParseStatistics`（套餐与积分口径）
+- `upstream/models.go`：`FetchModels` 改收 `upstream.Account` 接口（`AccountID()`/`Credential()`），
+  不再依赖插件的 `Auth` 结构
+- `VERSION` / `registry.json` / `.github/scripts/package-release.go`：构建注入版本、插件源清单、打包脚本
+- `Makefile`：`build` / `build-dev` / `linux` / `darwin` / `windows` / `test` / `lint` / `check` /
+  `clean` / `release` / `tag`
+- `.gitignore`（根 + `internal/`）：忽略插件产物、`dist/`、`auths/`、本地密钥与编辑器目录
+- `README.md`、`.github/workflows/build.yml`：按新结构重写
 
 ## 已验证（本轮）
 
 Windows 本机（`go` 通过 toolchain 下载的 1.26.0，cgo 编译器 MinGW-w64 8.1.0）：
 
 ```text
-go build ./...                                              PASS
-go vet ./...                                                PASS
-go test -count=1 ./...                                      PASS
-go test -race -count=1 ./plugin/codearts                    PASS
-go build -buildmode=c-shared -o codearts.dll ./plugin/codearts   PASS（13,768,307 B）
-PE 导出表解析                                              cliproxy_plugin_init 存在
+gofmt -l .                                                 0 个文件
+go build ./...                                             PASS
+go vet ./...                                               PASS
+go test -count=1 ./...                                     PASS（internal + upstream 两个包）
+go build -trimpath -buildmode=c-shared -ldflags "-X main.version=0.1.0" -o codearts.dll ./internal  PASS
+  产物内可检出注入的版本串 0.1.0，且 cliproxy_plugin_init 在导出表中
 ```
 
 Linux（容器 `codearts-go-glibc:latest`，glibc）：
 
 ```text
-go build -buildmode=c-shared -o /tmp/codearts.so ./plugin/codearts   PASS（10,853,904 B）
-nm -D /tmp/codearts.so | grep cliproxy                                cliproxy_plugin_init 存在
-ldd                                                                  仅依赖 libc.so.6
+go build -trimpath -buildmode=c-shared -ldflags '-X main.version=0.1.0' -o /tmp/codearts.so ./internal  PASS（10,978,240 B）
+nm -D /tmp/codearts.so | grep -c cliproxy                              8 个导出符号
 ```
 
 ## 未完成 / 已知限制
@@ -282,11 +294,16 @@ D:/go/pkg/mod/github.com/router-for-me/!c!l!i!proxy!a!p!i/v7@v7.2.30/sdk/plugina
 ```bash
 git status --short
 go build ./... && go vet ./... && go test -count=1 ./...
-go build -buildmode=c-shared -o codearts.dll ./plugin/codearts     # Windows
-CGO_ENABLED=1 go build -buildmode=c-shared -o codearts.so ./plugin/codearts  # Linux/glibc
+make check                                                 # lint + test + build + registry 校验
+make linux                                                 # 或 darwin / windows，产物 codearts.*
+git tag -a v0.1.0 -m "CodeArts CPA v0.1.0" && git push origin v0.1.0   # 触发 CI 发版
 ```
 
-`make check` = `vet + test + build`。不要提交 `codearts.so`、`codearts.dll`、`codearts.h`。
+不要提交 `codearts.so` / `codearts.dll` / `codearts.dylib` / `codearts.h`（已在 `.gitignore`）。
+
+发布约定：`VERSION` 是唯一版本源；CI 从 tag（或 dispatch 输入）解析版本，注入
+`-X main.version`，并把同名版本写进 `registry.json` 的 `version` / `release_tag`
+（商店只认 `v<version>` 这个 tag 形状）。
 
 ## 当前工作区注意事项
 

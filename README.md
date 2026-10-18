@@ -1,9 +1,8 @@
-# CodeArts2API — CLIProxyAPI 原生插件
+# CodeArts CPA
 
-把华为云 **CodeArts Agent**（盘古助手 / 码道）的账号接入
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)，让任何 OpenAI 兼容客户端
-都能直接使用 CodeArts 的模型。本仓库现在**只提供 CLIProxyAPI 原生插件形态**
-（`codearts.dll` / `codearts.so`），不再提供独立 HTTP 服务。
+华为云 **CodeArts Agent**（盘古助手 / 码道）的 **CLIProxyAPI (CPA)** 提供方插件，
+让任何 OpenAI 兼容客户端都能直接使用 CodeArts 的模型。仓库只做插件形态
+（`codearts.so` / `codearts.dylib` / `codearts.dll`），没有独立 HTTP 服务。
 
 插件注册为 CPA 的 `codearts` 提供方，具备以下能力：
 
@@ -12,10 +11,33 @@
 | `model_provider` | 静态模型表 + 按账号发现的上游模型 |
 | `auth_provider` | OAuth 登录、凭证解析、token 刷新 |
 | `executor` | `chat-completions` 协议，支持流式、工具调用、推理内容 |
-| `management_api` | 账号管理 API + 内嵌管理面板（菜单 **CodeArts**） |
+| `management_api` | 账号管理 API + 内嵌管理面板（菜单 **CodeArts**，中英双语） |
 
-凭证文件、刷新调度、请求转发全部由 CPA 宿主负责；插件只通过宿主回调读写 auth，
-不落盘、不自行监听端口。
+凭证文件、刷新调度、请求转发全部由 CPA 宿主负责；插件只通过宿主回调读写 auth。
+唯一的本地状态是用量账本（面板上的「今日 tokens / 用量记录」），默认落在用户配置目录。
+
+## 目录结构
+
+```
+internal/                插件主体（package main，c-shared 构建入口）
+  main.go                C ABI 导出、RPC 分派、注册 metadata
+  auth.go / auth_model.go 凭证解析、刷新、auths/codearts-*.json 读写
+  errors.go              错误分类、刷新重试、宿主 auth 回调
+  executor.go            chat-completions 执行器（流式 / 工具 / 推理）
+  transport.go           宿主 HTTP 桥
+  login.go               OAuth PKCE + DPoP 登录
+  models.go              模型表与模型发现
+  management.go          管理 API、读代理、面板路由
+  usage.go / usagehook.go 用量账本与宿主 usage.handle
+  assets/panel.html      go:embed 的内嵌面板
+  docs/                  包布局与开发说明
+upstream/                华为云协议客户端（不依赖 CPA）
+.github/workflows/       多平台构建 + 自动发布
+scripts/                 仓库自检脚本（registry 校验）
+registry.json            插件源清单（商店 / 自建源都读它）
+VERSION                  版本号，构建时注入插件 metadata
+docs/                    码道客户端协议逆向记录
+```
 
 ## 构建
 
@@ -23,35 +45,68 @@
 系统 C 编译器。
 
 ```bash
-# Linux（产物 codearts.so）
-CGO_ENABLED=1 go build -buildmode=c-shared -o codearts.so ./plugin/codearts
-
-# Windows（产物 codearts.dll，需要 gcc，例如 MinGW-w64 或 zig cc）
-set CGO_ENABLED=1
-go build -buildmode=c-shared -o codearts.dll ./plugin/codearts
+make build      # 按当前平台产出 codearts.so / codearts.dylib / codearts.dll
+make linux      # 产物 codearts.so
+make windows    # 产物 codearts.dll（需要 gcc，例如 MinGW-w64 或 zig cc）
+make darwin     # 产物 codearts.dylib
+make check      # 格式 + vet + 单测 + 构建 + registry 校验
 ```
 
-`make linux` / `make windows` 等价于上面的命令。产物旁会生成同名 `.h`
-头文件，两者都不要提交到仓库（已在 `.gitignore` 中忽略）。
+等价的手写命令：
+
+```bash
+CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -ldflags "-X main.version=$(cat VERSION)" -o codearts.so ./internal
+```
+
+产物旁会生成同名 `.h` 头文件，两者都不要提交到仓库（已在 `.gitignore` 中忽略）。
 
 ## 安装
 
-1. 把 `codearts.so`（Linux）或 `codearts.dll`（Windows）放进 CPA 的插件目录
-   （默认 `plugins/`）。
-2. 在 `config.yaml` 中启用插件系统与该插件：
+### 通过插件源（推荐）
 
-   ```yaml
-   plugins:
-     enabled: true
-     dir: plugins
-     configs:
-       codearts:
-         enabled: true
-   ```
+CPA 管理面板 → **Config Panel → Advanced → Third-party Plugin Sources**，加上：
 
-3. 重启 CPA。`GET /v1/models` 应能看到 CodeArts 模型（默认静态列表：
-   `GLM-5.2`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`deepseek-v4-flash-0731`、
-   `deepseek-v4-pro-0813`、`glm-5.3-flash`；有账号后按账号上报的目录覆盖）。
+```
+https://github.com/HITZY2002/codearts2api/releases/latest/download/registry.json
+https://raw.githubusercontent.com/HITZY2002/codearts2api/main/registry.json
+```
+
+或者写进宿主配置（插件系统默认关闭）：
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - https://raw.githubusercontent.com/HITZY2002/codearts2api/main/registry.json
+```
+
+> ⚠️ 通过商店安装时，宿主会接管该插件的版本目录并清理其它同名库文件。
+> 如果你自己编译了一份 `.so`，请在另一台宿主/容器里试商店安装。
+
+### 手动安装
+
+```bash
+# linux/amd64
+unzip codearts_<version>_linux_amd64.zip    # zip 根目录就是 codearts.so
+cp codearts.so /path/to/cliproxyapi/plugins/
+```
+
+平台分目录布局也可用：`plugins/linux/amd64/codearts.so`。
+
+然后在 `config.yaml` 中启用：
+
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    codearts:
+      enabled: true
+```
+
+重启 CPA 后，`GET /v1/models` 应能看到 CodeArts 模型（默认静态列表：
+`GLM-5.2`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`deepseek-v4-flash-0731`、
+`deepseek-v4-pro-0813`、`glm-5.3-flash`；有账号后按账号上报的目录覆盖）。
 
 在 CPA 管理端插件页可以看到 **CodeArts** 资源菜单，点开就是账号面板。
 
@@ -219,41 +274,24 @@ curl -s -X POST http://127.0.0.1:8317/v0/management/plugins/codearts/keepalive \
 - **禁用**：面板「禁用」或 `POST /enabled`。禁用只写 auth 的 `disabled` 标记，
   不删除凭证，可随时启用。
 
-## 目录结构
-
-```
-plugin/codearts/          插件本体（c-shared 构建入口）
-  main.go                 C ABI 导出与 RPC 分发
-  auth.go                 凭证解析 / 刷新
-  errors.go               错误分类（HTTP 状态映射）、刷新重试、宿主 auth 回调
-  executor.go             chat-completions 执行器（流式 / 非流式）
-  transport.go            宿主 HTTP 回调桥接
-  login.go                OAuth PKCE + DPoP 登录（本机回调 + 远程粘贴）
-  models.go               静态模型与按账号模型发现
-  management.go           管理 API 与面板路由
-  usage.go                用量账本（本地记账 / 按天与按模型汇总 / 落盘）
-  usagehook.go            宿主 usage.handle 回调
-  panel.html              内嵌管理面板
-internal/upstream/        华为云客户端（登录 / 聊天 / SSE / 模型发现 / 签到 / 套餐统计）
-internal/auth/            凭证结构与序列化
-docs/reverse-engineering.md  码道客户端协议逆向记录（实现依据）
-```
-
-仓库里只有这一个插件：没有独立 HTTP 服务、Docker 镜像或安装脚本，
-`go test ./...` 覆盖的就是要发布的代码。
-
 ## 开发与测试
 
 ```bash
-go test ./...                             # 全量单测
+go test ./...                                     # 全量单测
 go vet ./...
-go build -buildmode=c-shared -o /tmp/codearts.so ./plugin/codearts
+make lint                                         # gofmt + vet（有 staticcheck 就跑）
+CGO_ENABLED=1 go build -buildmode=c-shared -o /tmp/codearts.so ./internal
 ```
 
-`make check` 等价于 `vet + test + build`；`make clean` 删除本地产物。
+`make check` = `lint + test + build + registry 校验`；`make clean` 删除本地产物。
 
-CI（`.github/workflows/go.yml`）只做插件产物：在 Ubuntu 与 Windows 上分别构建
-`codearts.so` / `codearts.dll`，确认 `cliproxy_plugin_init` 导出存在后上传产物。
+CI（`.github/workflows/build.yml`）：
+
+- push / PR → 跑 `go test`、`go vet`、`registry.json` 校验，并交叉构建
+  linux/amd64、linux/arm64、darwin/arm64、windows/amd64，产物按
+  `codearts_<version>_<goos>_<goarch>.zip` 打包上传。
+- 推送 `v*` 标签（或手动触发并填版本）→ 自动创建 GitHub Release，
+  附带各平台 zip、`checksums.txt` 和打上版本号的 `registry.json`。
 
 ## 免责声明
 

@@ -9,8 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 )
@@ -96,7 +95,7 @@ func rpcErrorEnvelope(err error) []byte {
 }
 
 // refreshCodeartsToken is replaceable in tests without contacting Huawei Cloud.
-var refreshCodeartsToken = func(ctx context.Context, cfg upstream.LoginConfig, acct *auth.Auth) (*upstream.TokenResponse, error) {
+var refreshCodeartsToken = func(ctx context.Context, cfg upstream.LoginConfig, acct *Auth) (*upstream.TokenResponse, error) {
 	return newUpstreamClient(30*time.Second).RefreshToken(ctx, cfg, acct.RefreshToken, acct.CodeVerifier, upstream.DPoPPrivateJWK(acct.DPoPPrivateKey))
 }
 
@@ -109,7 +108,7 @@ var refreshBackoff = 300 * time.Millisecond
 // refreshWithRetry calls the refresh endpoint, retrying once for transient
 // failures. The upstream rotates refresh_token even when issuing STS credentials
 // fails, so a rotated value from a failed attempt is carried into the next one.
-func refreshWithRetry(ctx context.Context, cfg upstream.LoginConfig, acct *auth.Auth) (*upstream.TokenResponse, error) {
+func refreshWithRetry(ctx context.Context, cfg upstream.LoginConfig, acct *Auth) (*upstream.TokenResponse, error) {
 	var lastErr error
 	for try := 0; try < refreshAttempts; try++ {
 		if try > 0 {

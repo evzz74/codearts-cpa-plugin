@@ -50,13 +50,13 @@ type modelMetric struct {
 
 // PackageInfo 套餐概要。
 type packageInfo struct {
-	SpecCode     string `json:"spec_code"`
-	Status       string `json:"status"`
-	NameCN       string `json:"package_name_cn"`
-	NameEN       string `json:"package_name_en"`
-	URL          string `json:"package_url"`
-	IsCredit     bool   `json:"is_credit_package"`
-	IsToken      bool   `json:"is_token_package"`
+	SpecCode string `json:"spec_code"`
+	Status   string `json:"status"`
+	NameCN   string `json:"package_name_cn"`
+	NameEN   string `json:"package_name_en"`
+	URL      string `json:"package_url"`
+	IsCredit bool   `json:"is_credit_package"`
+	IsToken  bool   `json:"is_token_package"`
 }
 
 // AccountStatistics statistics/plugin 的脱敏解析结果。

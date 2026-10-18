@@ -16,8 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -70,10 +69,10 @@ var loginSessions = struct {
 
 var exchangeLoginCode = func(ctx context.Context, s *loginSession, code string) (*upstream.TokenResponse, error) {
 	// redirect_uri must repeat exactly what /authorize received, host included.
-	return newUpstreamClient(35 * time.Second).ExchangeCodeAt(ctx, s.cfg, code, s.verifier, s.callbackHost, s.port, s.key)
+	return newUpstreamClient(35*time.Second).ExchangeCodeAt(ctx, s.cfg, code, s.verifier, s.callbackHost, s.port, s.key)
 }
 var pollLoginTicket = func(ctx context.Context, s *loginSession) (*upstream.TokenResponse, error) {
-	return newUpstreamClient(30 * time.Second).PollTicket(ctx, s.cfg, s.ticket, s.secret)
+	return newUpstreamClient(30*time.Second).PollTicket(ctx, s.cfg, s.ticket, s.secret)
 }
 var saveLoginAuth = func(v any) (json.RawMessage, error) { return hostAuthSave(v) }
 
@@ -509,7 +508,7 @@ func finishLogin(s *loginSession, tok *upstream.TokenResponse) error {
 	if tok.UserID == "" {
 		return errors.New("login identity unavailable")
 	}
-	a := auth.New(tok.UserID, tok.UserName, tok.DomainID, tok.Credentials.SecurityToken, tok.Credentials.AccessKeyID, tok.Credentials.SecretAccessKey, tok.Credentials.Expiration, tok.RefreshToken, s.verifier, map[string]string(s.key))
+	a := New(tok.UserID, tok.UserName, tok.DomainID, tok.Credentials.SecurityToken, tok.Credentials.AccessKeyID, tok.Credentials.SecretAccessKey, tok.Credentials.Expiration, tok.RefreshToken, s.verifier, map[string]string(s.key))
 	a.SetClientID(s.cfg.ClientID)
 	storage, err := json.Marshal(a)
 	if err != nil {

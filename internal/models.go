@@ -7,8 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -76,7 +75,7 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 	return okEnvelope(map[string]any{"provider": providerName, "models": models}), nil
 }
 
-var discoverModels = func(acct *auth.Auth) ([]upstream.ModelInfo, error) {
+var discoverModels = func(acct *Auth) ([]upstream.ModelInfo, error) {
 	return newUpstreamClient(30 * time.Second).FetchModels(acct)
 }
 

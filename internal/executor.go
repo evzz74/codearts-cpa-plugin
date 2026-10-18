@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 )
 
 type executorRequest struct {

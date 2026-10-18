@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"codearts2api/internal/auth"
 )
 
 func TestCanonicalModelKnownIndex(t *testing.T) {
@@ -180,6 +178,15 @@ func TestSendChatV2BenefitHeaderSigned(t *testing.T) {
 	}
 }
 
+// stubAccount 满足 FetchModels 需要的 Account 接口。
+type stubAccount struct {
+	id   string
+	cred SignCredential
+}
+
+func (s stubAccount) AccountID() string          { return s.id }
+func (s stubAccount) Credential() SignCredential { return s.cred }
+
 func TestFetchModelsMergesSourcesAndGatesClaim(t *testing.T) {
 	var mu sync.Mutex
 	var claims int
@@ -218,7 +225,7 @@ func TestFetchModelsMergesSourcesAndGatesClaim(t *testing.T) {
 	c := New(5 * time.Second)
 	c.snapBase = srv.URL
 	c.benefitBase = srv.URL
-	acct := &auth.Auth{UserID: "u-merge", UserName: "n", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
+	acct := stubAccount{id: "u-merge", cred: SignCredential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "ST"}}
 
 	infos, err := c.FetchModels(acct)
 	if err != nil {

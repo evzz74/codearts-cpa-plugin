@@ -11,9 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 )
-
 
 func TestOAuthLoopbackDualChannel(t *testing.T) {
 	oldExchange, oldSave := exchangeLoginCode, saveLoginAuth
@@ -37,8 +36,8 @@ func TestOAuthLoopbackDualChannel(t *testing.T) {
 	value := envelopeResult(t, result)
 	raw, _ := json.Marshal(value)
 	var start struct {
-		URL    string `json:"url"`
-		State  string `json:"state"`
+		URL      string `json:"url"`
+		State    string `json:"state"`
 		Callback string `json:"callback_url"`
 	}
 	if err := json.Unmarshal(raw, &start); err != nil {
@@ -156,7 +155,8 @@ func TestLoginTicketChannelWhenCodeNeverArrives(t *testing.T) {
 	}
 }
 
-func TestOAuthRedirectGuardAndManagementAuth(t *testing.T) {	s := &loginSession{ticket: "ticket", port: 17666, cfg: upstream.DefaultLoginConfig(), expires: time.Now().Add(time.Minute)}
+func TestOAuthRedirectGuardAndManagementAuth(t *testing.T) {
+	s := &loginSession{ticket: "ticket", port: 17666, cfg: upstream.DefaultLoginConfig(), expires: time.Now().Add(time.Minute)}
 	portal, _ := url.Parse(s.cfg.PortalHost)
 	redirect := portal.Scheme + "://" + portal.Host + "/authorize?ticket_id=ticket"
 	if next, err := portalRedirect(s, redirect); err != nil || next != redirect {

@@ -1,5 +1,5 @@
-// Package auth 管理 auths/ 目录下的 CodeArts 凭证文件 codearts-{user_id}.json。
-package auth
+// Package main 里的凭证模型：auths/ 目录下的 CodeArts 凭证文件 codearts-{user_id}.json。
+package main
 
 import (
 	"encoding/json"
@@ -9,7 +9,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/HITZY2002/codearts2api/upstream"
 )
+
+// AccountID / Credential 让 *Auth 满足 upstream.Account，模型发现不需要在
+// upstream 包里认识这个结构。
+func (a *Auth) AccountID() string { return a.UserID }
+
+// Credential 组装签名用的 STS 三元组。
+func (a *Auth) Credential() upstream.SignCredential {
+	return upstream.SignCredential{
+		AccessKeyID:     a.AccessKeyID,
+		SecretAccessKey: a.SecretAccessKey,
+		SecurityToken:   a.CloudDragonTok,
+	}
+}
 
 // Auth 单个账号凭证（登录 oauth2/tokens 返回）。
 type Auth struct {

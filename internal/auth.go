@@ -8,8 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -35,8 +34,8 @@ func ownedAuth(fileName, provider string, storage []byte) bool {
 		(strings.HasPrefix(name, "codearts-") && strings.HasSuffix(name, ".json") && len(name) > len("codearts-.json"))
 }
 
-func authFromStorage(raw []byte) (*auth.Auth, error) {
-	var acct auth.Auth
+func authFromStorage(raw []byte) (*Auth, error) {
+	var acct Auth
 	if err := json.Unmarshal(raw, &acct); err != nil {
 		return nil, err
 	}
@@ -62,7 +61,7 @@ func authMetadata(storage []byte) (map[string]any, bool) {
 	return metadata, disabled
 }
 
-func authData(acct *auth.Auth, storage []byte, metadata map[string]any, disabled bool) pluginAuthData {
+func authData(acct *Auth, storage []byte, metadata map[string]any, disabled bool) pluginAuthData {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}

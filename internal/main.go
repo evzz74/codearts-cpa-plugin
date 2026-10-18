@@ -51,6 +51,10 @@ const (
 	schemaVersion = pluginabi.SchemaVersion
 )
 
+// version 由构建注入：-ldflags "-X main.version=$(cat VERSION)"。
+// 未注入时回退成开发版标记，面板与注册 metadata 都读这个值。
+var version = "0.0.0-dev"
+
 var hostAPI *C.cliproxy_host_api
 
 func main() {}
@@ -183,7 +187,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 		initLedgerStorage()
 		return okEnvelope(map[string]any{
 			"schema_version": schemaVersion,
-			"metadata":       pluginapi.Metadata{Name: "CodeArts", Version: "0.1.0", Author: "codearts2api", GitHubRepository: "https://github.com/HITZY2002/codearts2api"},
+			"metadata":       pluginapi.Metadata{Name: "CodeArts", Version: version, Author: "codearts2api", GitHubRepository: "https://github.com/HITZY2002/codearts2api"},
 			"capabilities": map[string]any{
 				"model_provider": true, "auth_provider": true, "frontend_auth_provider": false,
 				"executor": true, "executor_model_scope": "oauth",

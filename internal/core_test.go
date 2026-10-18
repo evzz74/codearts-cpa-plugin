@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -87,7 +86,7 @@ func TestParseAuthOwnershipAndIdentity(t *testing.T) {
 func TestRefreshPreservesStorageAndMetadata(t *testing.T) {
 	previous := refreshCodeartsToken
 	defer func() { refreshCodeartsToken = previous }()
-	refreshCodeartsToken = func(_ context.Context, cfg upstream.LoginConfig, acct *auth.Auth) (*upstream.TokenResponse, error) {
+	refreshCodeartsToken = func(_ context.Context, cfg upstream.LoginConfig, acct *Auth) (*upstream.TokenResponse, error) {
 		if cfg.ClientID != "custom" || acct.CodeVerifier != "pkce" || acct.DPoPPrivateKey["d"] != "private" {
 			t.Fatalf("lost bound credentials: %+v %+v", cfg, acct)
 		}
@@ -117,7 +116,7 @@ func TestRefreshPreservesStorageAndMetadata(t *testing.T) {
 	if string(fields["refresh_token"]) != `"rotated"` || string(fields["cloud_dragon_token"]) != `"new"` || string(fields["custom_field"]) != `{"keep":true}` {
 		t.Fatalf("storage: %s", data.StorageJSON)
 	}
-	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *auth.Auth) (*upstream.TokenResponse, error) {
+	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *Auth) (*upstream.TokenResponse, error) {
 		return nil, errors.New("offline")
 	}
 	_, err = handleRefreshAuth(request)
@@ -146,7 +145,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 	defer func() { refreshCodeartsToken, refreshBackoff = previousToken, previousBackoff }()
 	refreshBackoff = time.Millisecond
 	var seen []string
-	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *auth.Auth) (*upstream.TokenResponse, error) {
+	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *Auth) (*upstream.TokenResponse, error) {
 		return nil, errors.New("upstream unavailable")
 	}
 	storage := []byte(`{"type":"codearts","user_id":"u1","cloud_dragon_token":"old","refresh_token":"first","code_verifier":"pkce"}`)
@@ -155,7 +154,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	// First attempt rotates the token but fails; the retry must reuse the new one.
-	refreshCodeartsToken = func(_ context.Context, _ upstream.LoginConfig, a *auth.Auth) (*upstream.TokenResponse, error) {
+	refreshCodeartsToken = func(_ context.Context, _ upstream.LoginConfig, a *Auth) (*upstream.TokenResponse, error) {
 		seen = append(seen, a.RefreshToken)
 		if len(seen) == 1 {
 			return &upstream.TokenResponse{RefreshToken: "second"}, errors.New("sts unavailable")
@@ -174,7 +173,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 	}
 	// Both attempts failing yields the upstream outage status, not a panic.
 	seen = nil
-	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *auth.Auth) (*upstream.TokenResponse, error) {
+	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *Auth) (*upstream.TokenResponse, error) {
 		seen = append(seen, "x")
 		return nil, errors.New("down")
 	}
@@ -248,7 +247,7 @@ func TestSDKWireFormatAndAlias(t *testing.T) {
 func TestModelsPerAuthAndStatic(t *testing.T) {
 	previous := discoverModels
 	defer func() { discoverModels = previous }()
-	discoverModels = func(acct *auth.Auth) ([]upstream.ModelInfo, error) {
+	discoverModels = func(acct *Auth) ([]upstream.ModelInfo, error) {
 		if acct.UserID != "u2" {
 			t.Fatal("wrong account")
 		}

@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codearts2api/internal/auth"
-	"codearts2api/internal/upstream"
+	"github.com/HITZY2002/codearts2api/upstream"
 )
 
 // newTestLedger 返回指向临时目录的账本，不碰用户真实数据。
@@ -187,12 +186,12 @@ func TestStatsActionServesConsolePayload(t *testing.T) {
 	stubAccounts(t)
 	oldFetch := fetchStatistics
 	t.Cleanup(func() { fetchStatistics = oldFetch })
-	fetchStatistics = func(context.Context, *auth.Auth) (upstream.AccountStatistics, error) {
+	fetchStatistics = func(context.Context, *Auth) (upstream.AccountStatistics, error) {
 		return upstream.AccountStatistics{
 			Package: "体验版", SpecCode: "codearts.agent.individual.trial", IsCredit: true,
 			PeriodStart: "2026-10-17", PeriodEnd: "2026-11-18",
-			Credit:      &upstream.CreditBalance{Total: 6500, Used: 3.42, Remain: 6496.58, Percent: 0.05},
-			Packages:    []upstream.CreditPackage{{Name: "总积分包", Metric: "usageTotalPackageCredit", Total: 6500, Used: 3.42, Remain: 6496.58, Percent: 0.05}},
+			Credit:       &upstream.CreditBalance{Total: 6500, Used: 3.42, Remain: 6496.58, Percent: 0.05},
+			Packages:     []upstream.CreditPackage{{Name: "总积分包", Metric: "usageTotalPackageCredit", Total: 6500, Used: 3.42, Remain: 6496.58, Percent: 0.05}},
 			PeriodTokens: 41938,
 		}, nil
 	}
@@ -265,7 +264,7 @@ func TestStatsUnavailableKeepsRowReadable(t *testing.T) {
 	stubAccounts(t)
 	oldFetch := fetchStatistics
 	t.Cleanup(func() { fetchStatistics = oldFetch })
-	fetchStatistics = func(context.Context, *auth.Auth) (upstream.AccountStatistics, error) {
+	fetchStatistics = func(context.Context, *Auth) (upstream.AccountStatistics, error) {
 		return upstream.AccountStatistics{}, errFake
 	}
 	status, value := responseBody(t, managementBootstrap("/call", valuesWith("op", "stats")))

@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "codearts",
+      "name": "CodeArts CPA",
+      "description": "Huawei Cloud CodeArts Agent (盘古助手 / 码道) OAuth provider for CLIProxyAPI: chat completions with streaming, tools and reasoning, OAuth PKCE + DPoP login and refresh, credential import, daily check-in and keepalive, an account panel with console-style credit donut, and a local per-request token ledger with an estimate marker.",
+      "author": "HITZY2002",
+      "version": "0.1.0",
+      "release_tag": "v0.1.0",
+      "repository": "https://github.com/HITZY2002/codearts2api",
+      "homepage": "https://github.com/HITZY2002/codearts2api",
+      "logo": "https://raw.githubusercontent.com/HITZY2002/codearts2api/main/logo.png",
+      "license": "MIT",
+      "install": {
+        "type": "github-release"
+      },
+      "tags": [
+        "Provider",
+        "OAuth",
+        "CodeArts",
+        "Huawei Cloud",
+        "Management"
+      ]
+    }
+  ]
+}
