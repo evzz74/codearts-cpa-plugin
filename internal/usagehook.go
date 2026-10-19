@@ -9,7 +9,6 @@ package main
 
 import (
 	"encoding/json"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -27,12 +26,11 @@ func handleUsageRecord(raw []byte) []byte {
 	if record.Provider != "" && record.Provider != providerName {
 		return okEnvelope(map[string]any{"ok": true, "skipped": true})
 	}
-	at := record.RequestedAt
-	if at.IsZero() {
-		at = time.Now()
-	}
+	// 时间戳留空交给账本补：账本用的是自己的可注入时钟（production 为 time.Now，
+	// 测试里可控）。这里若直接取 time.Now()，记录会落进「真实今天」的日期桶，
+	// 而快照按账本时钟算「今日」，两者错开就永远读不到这条记录。
 	entry := usageEntry{
-		At:        at,
+		At:        record.RequestedAt,
 		Device:    ledgerDeviceKey(record.AuthIndex),
 		Account:   record.AuthType,
 		Model:     record.Model,
