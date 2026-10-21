@@ -49,12 +49,12 @@ type ModelInfo struct {
 // 冷启动种子：福利套餐轮换后新增的模型在首次发现前也要走福利路由，
 // 少带一次头就是一次 404，宁可多带。发现结果只会在此基础上增补。
 var seedBenefitModels = []string{
-	"deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "glm-5.3-flash",
+	"deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "glm-5.3", "glm-5.3-flash",
 }
 
 // 内置模型种子（大小写归一用，不标记福利）。
 var seedKnownModels = []string{
-	"GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
+	"GLM-5.3", "GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
 	"OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash",
 	"Qwen3-VL-235B", "Qwen3.5-397B-A17B-VL", "Qwen3.6-27B-VL",
 }

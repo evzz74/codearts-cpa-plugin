@@ -53,9 +53,23 @@ func parseExecutor(raw []byte) (executorRequest, []upstream.ChatMessage, upstrea
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, err
 	}
+	if req.AuthID != "" {
+		file, err := findAccountByID(req.AuthID)
+		if err != nil {
+			return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, newPluginError("auth_store_unavailable", http.StatusBadGateway, "could not resolve selected account")
+		}
+		_, storage, err := accountStorage(file)
+		if err != nil {
+			return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, newPluginError("auth_store_unavailable", http.StatusBadGateway, "could not read selected account")
+		}
+		req.StorageJSON = storage
+	}
 	acct, err := authFromStorage(req.StorageJSON)
 	if err != nil {
 		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, authStorageError(err)
+	}
+	if _, disabled := authMetadata(req.StorageJSON); disabled {
+		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, newPluginError("auth_disabled", http.StatusForbidden, "account is disabled")
 	}
 	if acct.AccessKeyID == "" || acct.SecretAccessKey == "" {
 		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, newPluginError("auth_unusable", http.StatusForbidden, "missing account signing credentials")
@@ -160,6 +174,9 @@ func parseExecutor(raw []byte) (executorRequest, []upstream.ChatMessage, upstrea
 	}
 	if model == "" {
 		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, fmt.Errorf("model is empty")
+	}
+	if modelDisabled(req.StorageJSON, model) {
+		return req, nil, upstream.ChatOptions{}, "", upstream.SignCredential{}, newPluginError("model_disabled", http.StatusForbidden, "model is disabled for this account")
 	}
 	opts := upstream.ChatOptions{ReasoningEffort: chat.ReasoningEffort, MaxTokens: chat.MaxTokens, Temperature: chat.Temperature, TopP: chat.TopP, Tools: chat.Tools}
 	if chat.MaxCompletionTokens != nil {
@@ -284,13 +301,19 @@ func openExecutorStream(ctx context.Context, raw []byte) (executorRequest, io.Re
 	return req, stream, model, err
 }
 
-// usageFromRequest 从执行器请求里取出记账需要的上下文。
-// device_id 由宿主注入（CPA 用它区分一台设备上的多个账号），缺失时退回 uid。
+// AuthID and AuthIndex are distinct host identifiers; device_id is not an account key.
 func usageFromRequest(req executorRequest) (device, account, alias string) {
-	if value, ok := req.Metadata["device_id"].(string); ok {
-		device = value
+	if req.AuthID != "" {
+		if file, err := findAccountByID(req.AuthID); err == nil {
+			device = file.AuthIndex
+		} else {
+			device = "unresolved-" + req.AuthID
+		}
 	}
-	acct, _ := authFromStorage(req.StorageJSON)
+	acct, err := authFromStorage(req.StorageJSON)
+	if err != nil {
+		return device, "", req.Model
+	}
 	account = acct.UserName
 	if account == "" {
 		account = acct.UserID
@@ -317,7 +340,12 @@ func buildMessagesText(messages []upstream.ChatMessage) string {
 			raw, _ := json.Marshal(content)
 			sb.Write(raw)
 		}
-		sb.WriteByte('\n')
+		if message.ReasoningContent != nil {
+			sb.WriteString(*message.ReasoningContent)
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
 		for _, call := range message.ToolCalls {
 			sb.WriteString(call.Function.Name)
 			sb.WriteString(call.Function.Arguments)
@@ -329,22 +357,34 @@ func buildMessagesText(messages []upstream.ChatMessage) string {
 func handleExecute(raw []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	return executeWithContext(ctx, raw)
+}
+
+func executeWithContext(ctx context.Context, raw []byte) ([]byte, error) {
 	started := time.Now()
 	var req executorRequest
 	_ = json.Unmarshal(raw, &req)
 	_, stream, model, err := openExecutorStream(ctx, raw)
 	if err != nil {
 		recordUsageExecution(req, model, started, nil, false, err)
-		return nil, err
+		return nil, safeExecutionError(err)
 	}
 	defer stream.Close()
 	completion, err := upstream.Aggregate(stream, model)
 	if err != nil {
 		recordUsageExecution(req, model, started, nil, false, err)
-		return nil, err
+		return nil, safeExecutionError(err)
 	}
 	usage, _ := completion["usage"].(map[string]any)
-	recordUsageExecution(req, model, started, usage, false, nil)
+	var captured upstream.RawCompletion
+	if choices, ok := completion["choices"].([]any); ok && len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		message, _ := choice["message"].(map[string]any)
+		captured.Content, _ = message["content"].(string)
+		captured.Reasoning, _ = message["reasoning_content"].(string)
+		captured.ToolCalls, _ = message["tool_calls"].([]upstream.ChatToolCall)
+	}
+	recordUsageExecution(req, model, started, usage, false, nil, &captured)
 	payload, err := json.Marshal(completion)
 	if err != nil {
 		return nil, err
@@ -359,7 +399,10 @@ func recordUsageExecution(req executorRequest, model string, started time.Time, 
 			_ = recovered
 		}
 	}()
-	device, account, _ := usageFromRequest(req)
+	device, account, alias := usageFromRequest(req)
+	if model == "" {
+		model = upstreamModelName(alias)
+	}
 	entry := usageEntry{
 		At:        started,
 		Device:    device,
@@ -370,10 +413,9 @@ func recordUsageExecution(req executorRequest, model string, started time.Time, 
 	}
 	if callErr != nil {
 		entry.Failed = true
-		if typed, ok := callErr.(*pluginError); ok {
+		entry.Diagnostic = failureDetails(callErr)
+		if typed, ok := safeExecutionError(callErr).(*pluginError); ok {
 			entry.Status = typed.status
-		} else if typed, ok := callErr.(*upstream.ApiError); ok {
-			entry.Status = typed.Status
 		}
 		recordUsage(entry)
 		return
@@ -384,23 +426,38 @@ func recordUsageExecution(req executorRequest, model string, started time.Time, 
 		return
 	}
 	// 上游没给 usage：按请求与响应正文估算，并在明细里标 estimated。
-	if _, messages, _, _, _, err := parseExecutor(mustMarshal(req)); err == nil {
-		entry.Input = estimateFromText(buildMessagesText(messages))
+	body := req.Payload
+	if len(body) == 0 {
+		body = req.OriginalRequest
+	}
+	var chat struct {
+		Messages []struct {
+			Content          any             `json:"content"`
+			ReasoningContent *string         `json:"reasoning_content"`
+			ToolCalls        json.RawMessage `json:"tool_calls"`
+		} `json:"messages"`
+		Tools json.RawMessage `json:"tools"`
+	}
+	if json.Unmarshal(body, &chat) == nil {
+		var text strings.Builder
+		for _, message := range chat.Messages {
+			text.WriteString(buildMessagesText([]upstream.ChatMessage{{Content: message.Content, ReasoningContent: message.ReasoningContent}}))
+			if len(message.ToolCalls) > 0 && string(message.ToolCalls) != "null" {
+				text.Write(message.ToolCalls)
+			}
+		}
+		if len(chat.Tools) > 0 && string(chat.Tools) != "null" {
+			text.Write(chat.Tools)
+		}
+		entry.Input = estimateFromText(text.String())
 	}
 	if len(completion) > 0 && completion[0] != nil {
-		entry.Output = estimateFromText(completion[0].Content + completion[0].Reasoning)
+		entry.Reasoning = estimateFromText(completion[0].Reasoning)
+		entry.Output = estimateFromText(buildMessagesText([]upstream.ChatMessage{{Content: completion[0].Content, ReasoningContent: &completion[0].Reasoning, ToolCalls: completion[0].ToolCalls}}))
 	}
 	entry.Estimated = true
 	entry.Total = entry.Input + entry.Output
-	if entry.Total <= 0 {
-		return
-	}
 	recordUsage(entry)
-}
-
-func mustMarshal(v any) []byte {
-	raw, _ := json.Marshal(v)
-	return raw
 }
 
 func streamFrames(stream io.Reader, model string, framed bool, emit func([]byte) error) error {
@@ -451,11 +508,8 @@ func (w *frameWriter) Write(p []byte) (int, error) {
 			if err := w.emit(payload); err != nil {
 				return 0, err
 			}
-		} else if strings.HasPrefix(record, "event: error") {
-			if err := w.emit([]byte(record + "\n\n")); err != nil {
-				return 0, err
-			}
 		}
+		// StreamCapture returns the typed failure; only the caller emits its safe summary.
 	}
 	return len(p), nil
 }
@@ -476,8 +530,12 @@ func handleExecuteStream(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	// Validate synchronously before returning an async stream to the host.
+	started := time.Now()
 	if _, _, _, _, _, err := parseExecutor(raw); err != nil {
-		return nil, err
+		if req.AuthID != "" || len(req.StorageJSON) > 0 {
+			recordUsageExecution(req, "", started, nil, true, err)
+		}
+		return nil, safeExecutionError(err)
 	}
 	response := executorStreamResponse{Headers: http.Header{"Content-Type": {"text/event-stream"}, "Cache-Control": {"no-cache"}}, Chunks: []executorChunk{}}
 	framed := executorNeedsFrame(req.Metadata)
@@ -488,7 +546,7 @@ func handleExecuteStream(raw []byte) ([]byte, error) {
 		_, stream, model, err := openExecutorStream(ctx, raw)
 		if err != nil {
 			recordUsageExecution(req, model, started, nil, true, err)
-			return nil, err
+			return nil, safeExecutionError(err)
 		}
 		defer stream.Close()
 		var captured *upstream.RawCompletion
@@ -498,7 +556,7 @@ func handleExecuteStream(raw []byte) ([]byte, error) {
 		}, func(done *upstream.RawCompletion) { captured = done })
 		if err != nil {
 			recordUsageExecution(req, model, started, nil, true, err)
-			return nil, err
+			return nil, safeExecutionError(err)
 		}
 		var usage map[string]any
 		if captured != nil {
@@ -519,18 +577,14 @@ func handleExecuteStream(raw []byte) ([]byte, error) {
 			_ = stream.Close()
 		}
 		if err != nil && ctx.Err() == nil {
-			// Surface the failure to the client: HTTP clients read it from the
-			// chunked body, while the host reports the terminal stream error.
-			status := 0
-			if typed, ok := err.(*pluginError); ok {
-				status = typed.status
-			}
-			message, _ := json.Marshal(map[string]any{"error": map[string]any{"message": "codearts stream failed", "type": "upstream_error", "status": status, "code": errorCode(err)}})
+			diagnostic := failureDetails(err)
+			safe := safeExecutionError(err).(*pluginError)
+			failure = "codearts stream failed: " + diagnostic.summary()
+			message, _ := json.Marshal(map[string]any{"error": map[string]any{"message": failure, "type": "upstream_error", "status": safe.status, "code": safe.code, "diagnostic": diagnostic}})
 			if framed {
 				message = []byte("event: error\ndata: " + string(message) + "\n\n")
 			}
 			_ = hostStreamCall("host.stream.emit", req.StreamID, message)
-			failure = "codearts stream failed"
 		}
 		// 客户端中断也算一次失败请求：账本要能解释「为什么没消耗」。
 		recordErr := err

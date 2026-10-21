@@ -157,7 +157,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 	refreshCodeartsToken = func(_ context.Context, _ upstream.LoginConfig, a *Auth) (*upstream.TokenResponse, error) {
 		seen = append(seen, a.RefreshToken)
 		if len(seen) == 1 {
-			return &upstream.TokenResponse{RefreshToken: "second"}, errors.New("sts unavailable")
+			return &upstream.TokenResponse{RefreshToken: "second"}, &upstream.ApiError{Status: http.StatusBadGateway, Message: "sts unavailable"}
 		}
 		return &upstream.TokenResponse{RefreshToken: "second", Credentials: upstream.Credentials{SecurityToken: "new", AccessKeyID: "ak", SecretAccessKey: "sk"}}, nil
 	}
@@ -165,7 +165,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(seen) != 2 || seen[0] != "first" || seen[1] != "first" {
+	if len(seen) != 2 || seen[0] != "first" || seen[1] != "second" {
 		t.Fatalf("unexpected refresh sequence: %v", seen)
 	}
 	if token == nil || token.RefreshToken != "second" || acct.RefreshToken != "second" {
@@ -175,7 +175,7 @@ func TestRefreshRetriesAndKeepsRotatedToken(t *testing.T) {
 	seen = nil
 	refreshCodeartsToken = func(context.Context, upstream.LoginConfig, *Auth) (*upstream.TokenResponse, error) {
 		seen = append(seen, "x")
-		return nil, errors.New("down")
+		return nil, &upstream.ApiError{Status: http.StatusServiceUnavailable, Message: "down"}
 	}
 	request, _ := json.Marshal(authRefreshRequest{StorageJSON: storage})
 	if _, err = handleRefreshAuth(request); err == nil || len(seen) != refreshAttempts {

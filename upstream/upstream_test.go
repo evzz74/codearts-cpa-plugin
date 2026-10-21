@@ -273,6 +273,61 @@ func TestOAuthRefreshClassifiesExpiredRefreshToken(t *testing.T) {
 	}
 }
 
+func TestTokenEndpointPreservesPartialRotationAndRedactsErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		partial bool
+		expired bool
+	}{
+		{"missing STS", 200, `{"refresh_token":"secret-rotation","error_msg":"secret-message"}`, true, false},
+		{"missing AK", 200, `{"refresh_token":"secret-rotation","credentials":{"security_token":"secret-sts","secret_access_key":"secret-sk"}}`, true, false},
+		{"missing SK", 200, `{"refresh_token":"secret-rotation","credentials":{"security_token":"secret-sts","access_key_id":"secret-ak"}}`, true, false},
+		{"incomplete legacy", 200, `{"refresh_token":"secret-rotation","credential":{"securitytoken":"secret-sts","access":"secret-ak"}}`, true, false},
+		{"malformed", 200, `{"secret-sts":"secret-rotation"`, false, false},
+		{"HTTP rejection", 503, `{"refresh_token":"secret-rotation","error_msg":"secret-message"}`, false, false},
+		{"terminal", 400, `{"error":"invalid_grant","error_code":"secret-code","error_msg":"secret-message","refresh_token":"secret-rotation"}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			cfg := DefaultLoginConfig()
+			cfg.STSHost = srv.URL
+			response, err := New(time.Second).RefreshToken(context.Background(), cfg, "secret-input", "secret-verifier", nil)
+			if err == nil {
+				t.Fatal("incomplete/error response accepted")
+			}
+			if strings.Contains(err.Error(), "secret-") {
+				t.Fatalf("token endpoint leaked secrets: %v", err)
+			}
+			if tc.partial && (response == nil || response.RefreshToken != "secret-rotation") {
+				t.Fatal("partial response rotation discarded")
+			}
+			var expired *RefreshTokenExpiredError
+			if errors.As(err, &expired) != tc.expired {
+				t.Fatalf("terminal classification = %T", err)
+			}
+		})
+	}
+}
+
+func TestTokenEndpointAcceptsCompleteLegacySTS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"refresh_token":"rotated","credential":{"securitytoken":"st","access":"ak","secret":"sk","expires_at":"2030-01-01T00:00:00Z"}}`)
+	}))
+	defer srv.Close()
+	cfg := DefaultLoginConfig()
+	cfg.STSHost = srv.URL
+	response, err := New(time.Second).RefreshToken(context.Background(), cfg, "old", "pkce", nil)
+	if err != nil || response == nil || response.Credentials.AccessKeyID != "ak" || response.Credentials.SecretAccessKey != "sk" || response.Credentials.SecurityToken != "st" {
+		t.Fatalf("legacy normalization failed: %v", err)
+	}
+}
+
 func decodeDPoP(t *testing.T, proof string) (map[string]any, map[string]any) {
 	t.Helper()
 	parts := strings.Split(proof, ".")

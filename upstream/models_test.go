@@ -16,6 +16,7 @@ func TestCanonicalModelKnownIndex(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"Qwen3.9-Test-VL", "Qwen3.9-Test-VL"},           // 精确命中
 		{"qwen3.9-test-vl", "Qwen3.9-Test-VL"},           // 小写别名归一
+		{"glm-5.3", "GLM-5.3"},                           // 新增 GLM-5.3 精确模型名
 		{"glm-5.2", "GLM-5.2"},                           // 种子 + 静态别名
 		{"snap-chat", "GLM-5.2"},                         // 旧版别名
 		{"deepseek-v4-pro-0813", "deepseek-v4-pro-0813"}, // 福利种子（全小写）
@@ -45,7 +46,7 @@ func TestBenefitIsPerAccount(t *testing.T) {
 		t.Error("内置模型不应走福利路由")
 	}
 	// 目录未知的账号：回退冷启动种子（宁可带头，避免未注册模型 404）。
-	if !IsBenefitModel("acct-unknown", "glm-5.3-flash") {
+	if !IsBenefitModel("acct-unknown", "glm-5.3") || !IsBenefitModel("acct-unknown", "glm-5.3-flash") {
 		t.Error("目录未发现时应回退种子判定福利模型")
 	}
 	if IsBenefitModel("acct-unknown", "glm-5.2") {

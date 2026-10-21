@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -65,12 +66,43 @@ func authData(acct *Auth, storage []byte, metadata map[string]any, disabled bool
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
+	// CPA overlays metadata onto StorageJSON when persisting; stale copies must not win.
+	var stored map[string]json.RawMessage
+	if json.Unmarshal(storage, &stored) == nil {
+		for key := range stored {
+			delete(metadata, key)
+		}
+	}
 	metadata["type"] = providerName
 	label := acct.UserName
 	if label == "" {
 		label = acct.UserID
 	}
-	return pluginAuthData{Provider: providerName, Label: label, Disabled: disabled, StorageJSON: storage, Metadata: metadata}
+	data := pluginAuthData{Provider: providerName, Label: label, Disabled: disabled, StorageJSON: storage, Metadata: metadata}
+	if expires := acct.ExpiresAt(); !expires.IsZero() {
+		now := time.Now().UTC()
+		data.NextRefreshAfter = refreshAfter(now, expires)
+		// CPA clears the refresh gate after success; its interval fallback also needs a recognized expiry.
+		metadata["expired"] = expires.UTC().Format(time.RFC3339Nano)
+		interval := expires.Sub(now) / 2 / time.Second
+		if interval < 1 {
+			interval = 1
+		}
+		metadata["refresh_interval_seconds"] = int64(interval)
+	}
+	return data
+}
+
+func refreshAfter(now, expires time.Time) time.Time {
+	remaining := expires.Sub(now)
+	if remaining <= 0 {
+		return now
+	}
+	lead := 5 * time.Minute
+	if remaining <= lead {
+		lead = remaining / 2
+	}
+	return expires.Add(-lead).UTC()
 }
 
 func handleParseAuth(raw []byte) ([]byte, error) {
@@ -100,10 +132,26 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, newPluginError("invalid_request", http.StatusBadRequest, "invalid auth refresh request")
 	}
-	acct, err := authFromStorage(req.StorageJSON)
-	if err != nil {
-		return nil, authStorageError(fmt.Errorf("refresh: %w", err))
+	storage := []byte(req.StorageJSON)
+	var file accountFile
+	if req.AuthID != "" {
+		var err error
+		file, err = findAccountByID(req.AuthID)
+		if err != nil {
+			return nil, newPluginError("auth_not_found", http.StatusNotFound, "refresh: account not found")
+		}
+		unlock := lockAccount(file.Name)
+		defer unlock()
+		_, storage, err = accountStorage(file)
+		if err != nil {
+			return nil, newPluginError("auth_store_unavailable", http.StatusBadGateway, "refresh: could not read current account")
+		}
 	}
+	acct, err := authFromStorage(storage)
+	if err != nil {
+		return nil, newPluginError("auth_invalid", http.StatusBadRequest, "refresh: invalid stored credentials")
+	}
+	originalRefreshToken := acct.RefreshToken
 	if acct.RefreshToken == "" || acct.CodeVerifier == "" {
 		return nil, newPluginError("auth_unusable", http.StatusForbidden, "refresh: missing refresh_token or code_verifier")
 	}
@@ -119,8 +167,25 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		if ctx.Err() != nil {
 			status = http.StatusGatewayTimeout
 		}
-		// A transient STS failure after a rotation should still persist the new
-		// refresh token, so fall back to the rotated value where available.
+		if req.AuthID != "" && acct.RefreshToken != originalRefreshToken {
+			// Re-read under the existing lock; never save an old STS snapshot or
+			// extend its expiry just because the refresh token rotated.
+			_, latest, readErr := accountStorage(file)
+			if readErr != nil {
+				return nil, newPluginError("refresh_save_failed", http.StatusBadGateway, "refresh failed: could not read account to save rotated refresh token")
+			}
+			updated, mergeErr := mergeAccountFields(latest, map[string]any{"refresh_token": acct.RefreshToken})
+			if mergeErr != nil {
+				return nil, newPluginError("refresh_save_failed", http.StatusBadGateway, "refresh failed: could not merge rotated refresh token")
+			}
+			if _, saveErr := hostAuthSave(map[string]any{"name": file.Name, "json": json.RawMessage(updated)}); saveErr != nil {
+				return nil, newPluginError("refresh_save_failed", http.StatusBadGateway, "refresh failed: could not save rotated refresh token; sign in again if necessary")
+			}
+		}
+		var expired *upstream.RefreshTokenExpiredError
+		if errors.As(err, &expired) {
+			return nil, newPluginError("refresh_token_expired", http.StatusUnauthorized, "refresh: refresh token expired or rejected; sign in again")
+		}
 		return nil, newPluginError("refresh_unavailable", status, "refresh: upstream token endpoint unavailable")
 	}
 	if token == nil {
@@ -138,9 +203,11 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	}
 	// Merge into the original document rather than re-marshalling Auth: preserve
 	// unknown fields, operator notes and auth metadata across token rotation.
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(req.StorageJSON, &fields); err != nil {
-		return nil, err
+	if req.AuthID != "" {
+		_, storage, err = accountStorage(file)
+		if err != nil {
+			return nil, newPluginError("auth_store_unavailable", http.StatusBadGateway, "refresh: could not read current account for merge")
+		}
 	}
 	changes := map[string]any{
 		"cloud_dragon_token": credentials.SecurityToken,
@@ -151,9 +218,6 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if credentials.Expiration != "" {
 		changes["expiration"] = credentials.Expiration
 	}
-	if token.RefreshToken != "" {
-		changes["refresh_token"] = token.RefreshToken
-	}
 	if token.UserID != "" {
 		changes["user_id"] = token.UserID
 	}
@@ -163,34 +227,34 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if token.DomainID != "" {
 		changes["domain_id"] = token.DomainID
 	}
-	for key, value := range changes {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, err
-		}
-		fields[key] = encoded
-	}
-	storage, err := json.Marshal(fields)
+	// A prior failed attempt may have rotated even if the successful response
+	// omits refresh_token.
+	changes["refresh_token"] = acct.RefreshToken
+	storage, err = mergeAccountFields(storage, changes)
 	if err != nil {
-		return nil, err
+		return nil, newPluginError("auth_invalid", http.StatusBadRequest, "refresh: could not merge credentials")
 	}
 	refreshed, err := authFromStorage(storage)
 	if err != nil {
 		return nil, err
 	}
-	metadata, disabled := authMetadata(req.StorageJSON)
+	metadata, disabled := authMetadata(storage)
 	for key, value := range req.Metadata {
-		metadata[key] = value
+		if req.AuthID == "" {
+			metadata[key] = value
+		} else if _, exists := metadata[key]; !exists && key != "disabled" {
+			metadata[key] = value
+		}
 	}
-	if flag, ok := metadata["disabled"].(bool); ok {
-		disabled = flag
+	if req.AuthID == "" {
+		if flag, ok := metadata["disabled"].(bool); ok {
+			disabled = flag
+		}
 	}
 	data := authData(refreshed, storage, metadata, disabled)
 	response := map[string]any{"auth": data}
-	// The host prefers NextRefreshAfter over parsing expired credentials, so
-	// report the STS expiry to keep refresh timing on time.
-	if expires := refreshed.ExpiresAt(); !expires.IsZero() {
-		response["next_refresh_after"] = expires.UTC()
+	if !data.NextRefreshAfter.IsZero() {
+		response["next_refresh_after"] = data.NextRefreshAfter
 	}
 	// Empty file_name and id make the host retain the current auth file and ID.
 	return okEnvelope(response), nil

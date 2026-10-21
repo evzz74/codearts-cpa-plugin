@@ -193,7 +193,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 				"executor": true, "executor_model_scope": "oauth",
 				"executor_input_formats":  []string{"chat-completions"},
 				"executor_output_formats": []string{"chat-completions"},
-				"management_api":          true, "scheduler": false, "usage_plugin": true,
+				"management_api":          true, "scheduler": false, "usage_plugin": false,
 			},
 		}), nil
 	case "usage.handle":

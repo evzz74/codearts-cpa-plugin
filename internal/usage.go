@@ -32,19 +32,20 @@ const (
 
 // usageEntry 一条请求级用量明细。
 type usageEntry struct {
-	At        time.Time `json:"at"`
-	Device    string    `json:"device,omitempty"`
-	Account   string    `json:"account,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Input     int64     `json:"input"`
-	Output    int64     `json:"output"`
-	Reasoning int64     `json:"reasoning,omitempty"`
-	Total     int64     `json:"total"`
-	Estimated bool      `json:"estimated,omitempty"`
-	Stream    bool      `json:"stream,omitempty"`
-	Failed    bool      `json:"failed,omitempty"`
-	Status    int       `json:"status,omitempty"`
-	LatencyMS int64     `json:"latency_ms,omitempty"`
+	At         time.Time          `json:"at"`
+	Device     string             `json:"device,omitempty"`
+	Account    string             `json:"account,omitempty"`
+	Model      string             `json:"model,omitempty"`
+	Input      int64              `json:"input"`
+	Output     int64              `json:"output"`
+	Reasoning  int64              `json:"reasoning,omitempty"`
+	Total      int64              `json:"total"`
+	Estimated  bool               `json:"estimated,omitempty"`
+	Stream     bool               `json:"stream,omitempty"`
+	Failed     bool               `json:"failed,omitempty"`
+	Status     int                `json:"status,omitempty"`
+	LatencyMS  int64              `json:"latency_ms,omitempty"`
+	Diagnostic *failureDiagnostic `json:"diagnostic,omitempty"`
 }
 
 // usageDay 某一天的汇总。
@@ -180,9 +181,6 @@ func (l *usageLedger) persistLocked() {
 
 // record 追加一条用量。device 为空时归到 "default" 桶。
 func (l *usageLedger) record(entry usageEntry) {
-	if entry.Total <= 0 && !entry.Failed {
-		return
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	device := ledgerDeviceKey(entry.Device)
@@ -402,19 +400,19 @@ func usageCountsFromRaw(raw map[string]any) (input, output, reasoning, total int
 			}
 			switch typed := v.(type) {
 			case float64:
-				if typed != 0 {
+				if typed >= 0 {
 					return int64(typed), true
 				}
 			case int64:
-				if typed != 0 {
+				if typed >= 0 {
 					return typed, true
 				}
 			case int:
-				if typed != 0 {
+				if typed >= 0 {
 					return int64(typed), true
 				}
 			case json.Number:
-				if n, err := typed.Int64(); err == nil && n != 0 {
+				if n, err := typed.Int64(); err == nil && n >= 0 {
 					return n, true
 				}
 			}
@@ -436,10 +434,7 @@ func usageCountsFromRaw(raw map[string]any) (input, output, reasoning, total int
 		if !okIn && !okOut {
 			return 0, 0, 0, 0, false
 		}
-		total = input + output + reasoning
-	}
-	if total <= 0 {
-		return 0, 0, 0, 0, false
+		total = input + output
 	}
 	return input, output, reasoning, total, true
 }
@@ -448,6 +443,70 @@ func usageCountsFromRaw(raw map[string]any) (input, output, reasoning, total int
 func recordUsage(entry usageEntry) {
 	defer func() { _ = recover() }()
 	ledger.record(entry)
+}
+
+func migrateLegacyUsage(file accountFile, acct *Auth) {
+	if acct.UserID == "" || ledgerDeviceKey(acct.UserID) == ledgerDeviceKey(file.AuthIndex) {
+		return
+	}
+	files, err := codeartsFiles()
+	if err != nil {
+		return
+	}
+	matches := 0
+	for _, candidate := range files {
+		other, _, err := accountStorage(candidate)
+		if err != nil {
+			return
+		}
+		if ledgerDeviceKey(other.UserID) == ledgerDeviceKey(acct.UserID) {
+			matches++
+		}
+		if candidate.AuthIndex != file.AuthIndex && ledgerDeviceKey(candidate.AuthIndex) == ledgerDeviceKey(acct.UserID) {
+			return
+		}
+	}
+	if matches != 1 {
+		return
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	oldKey, key := ledgerDeviceKey(acct.UserID), ledgerDeviceKey(file.AuthIndex)
+	old := ledger.devices[oldKey]
+	if old == nil {
+		return
+	}
+	current := ledger.devices[key]
+	if current == nil {
+		current = &usageLedgerAccount{}
+		ledger.devices[key] = current
+	}
+	current.Records = append(current.Records, old.Records...)
+	if current.Pruned == nil {
+		current.Pruned = map[string]*usagePrunedDay{}
+	}
+	for day, value := range old.Pruned {
+		if value == nil {
+			continue
+		}
+		if current.Pruned[day] == nil {
+			current.Pruned[day] = &usagePrunedDay{Day: day}
+		}
+		dst := current.Pruned[day]
+		dst.Requests += value.Requests
+		dst.Failed += value.Failed
+		dst.Input += value.Input
+		dst.Output += value.Output
+		dst.Reasoning += value.Reasoning
+		dst.Total += value.Total
+	}
+	sort.SliceStable(current.Records, func(i, j int) bool { return current.Records[i].At.Before(current.Records[j].At) })
+	if extra := len(current.Records) - ledgerRecordLimit; extra > 0 {
+		current.mergePruned(current.Records[:extra])
+		current.Records = append([]usageEntry(nil), current.Records[extra:]...)
+	}
+	delete(ledger.devices, oldKey)
+	ledger.persistLocked()
 }
 
 // usageLedgerSnapshot 供管理接口读取。

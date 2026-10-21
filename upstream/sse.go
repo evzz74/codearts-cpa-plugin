@@ -24,8 +24,9 @@ import (
 
 // UpstreamError 流内业务错误。
 type UpstreamError struct {
-	Code string
-	Msg  string
+	Code       string
+	Msg        string
+	HTTPStatus int // SSE 业务错误所在的真实 HTTP 状态（200）。
 }
 
 func (e *UpstreamError) Error() string {
@@ -33,6 +34,52 @@ func (e *UpstreamError) Error() string {
 		return fmt.Sprintf("codearts error code=%s msg=%s", e.Code, e.Msg)
 	}
 	return fmt.Sprintf("codearts error: %s", e.Msg)
+}
+
+// responseErrorDetails 仅接受字符串/JSON 数字业务码，不把对象或原始 body
+// 格式化进诊断字段。使用 RawMessage 保留大整数精度，避免 float64 舍入。
+func responseErrorDetails(data, event string) (code, message string, isError bool) {
+	explicitError := strings.EqualFold(strings.TrimSpace(event), "error")
+	var payload map[string]json.RawMessage
+	if json.Unmarshal([]byte(data), &payload) != nil {
+		return "", "", explicitError
+	}
+	text := func(raw json.RawMessage) string {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		return value
+	}
+	scalarCode := func(raw json.RawMessage) string {
+		var value string
+		if json.Unmarshal(raw, &value) == nil {
+			return value
+		}
+		var number json.Number
+		if json.Unmarshal(raw, &number) == nil {
+			return number.String()
+		}
+		return ""
+	}
+	code = scalarCode(payload["error_code"])
+	if code == "" {
+		code = scalarCode(payload["code"]) // 兼容旧 SSE 的 code/message。
+	}
+	message = firstNonEmpty(text(payload["error_msg"]), text(payload["message"]), text(payload["msg"]))
+	if code != "" && code != "0" {
+		return code, message, true
+	}
+	var nested map[string]json.RawMessage
+	if raw := payload["error"]; len(raw) > 0 && string(raw) != "null" {
+		if json.Unmarshal(raw, &nested) == nil && nested != nil {
+			code = scalarCode(nested["code"])
+			message = firstNonEmpty(text(nested["message"]), text(nested["error_msg"]), message)
+			return code, message, code != "0" || explicitError
+		}
+		if msg := text(raw); msg != "" {
+			return "", msg, true
+		}
+	}
+	return code, message, explicitError
 }
 
 // RawCompletion 聚合结果。
@@ -208,6 +255,10 @@ func sortedToolCalls(calls toolCallAccumulator) []ChatToolCall {
 // applyEvent 把单事件应用到聚合状态。
 func applyEvent(content, reason *strings.Builder, finish *string, upErr *error, event, data string) {
 	event = strings.ToLower(strings.TrimSpace(event))
+	if code, message, isError := responseErrorDetails(data, event); isError {
+		*upErr = &UpstreamError{Code: code, Msg: firstNonEmpty(message, "request failed"), HTTPStatus: http.StatusOK}
+		return
+	}
 	var payload map[string]any
 	if strings.TrimSpace(data) != "" {
 		_ = json.Unmarshal([]byte(data), &payload)
@@ -230,10 +281,6 @@ func applyEvent(content, reason *strings.Builder, finish *string, upErr *error, 
 			return
 		}
 		// 纯 data 行（CodeArts 部分响应无 event 前缀）
-		if code := text("error_code", "code"); code != "" && code != "0" {
-			*upErr = &UpstreamError{Code: code, Msg: firstNonEmpty(text("error_msg", "message", "msg"), "request failed")}
-			return
-		}
 		// OpenAI 风格 delta：{choices:[{delta:{content,reasoning_content}}]} → 增量追加
 		delta, finishReason := deltaFromChunk(payload)
 		if finishReason != "" {
@@ -284,10 +331,6 @@ func applyEvent(content, reason *strings.Builder, finish *string, upErr *error, 
 		// 纯 structured QA 帧（无 text）：仅正文仍空时取 answer，避免整段 JSON 当回复
 		tryFillStructuredAnswer(content, payload)
 	case "onanswer", "answer", "delta", "message", "content":
-		if code := text("error_code", "code"); code != "" && code != "0" {
-			*upErr = &UpstreamError{Code: code, Msg: firstNonEmpty(text("error_msg", "message", "msg"), "request failed")}
-			return
-		}
 		delta, finishReason := deltaFromChunk(payload)
 		if finishReason != "" {
 			*finish = finishReason
@@ -316,10 +359,6 @@ func applyEvent(content, reason *strings.Builder, finish *string, upErr *error, 
 			reason.WriteString(t)
 		}
 	case "done", "end", "finish":
-		if code := text("error_code", "code"); code != "" && code != "0" {
-			*upErr = &UpstreamError{Code: code, Msg: firstNonEmpty(text("error_msg", "message", "msg"), "request failed")}
-			return
-		}
 		if f := text("finish_reason", "finish", "reason"); f != "" {
 			*finish = f
 		} else {

@@ -28,6 +28,7 @@ __pycache__/
 
 # 编辑器 / 系统
 .vscode/
+.claude/
 .idea/
 .DS_Store
 Thumbs.db

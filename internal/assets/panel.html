@@ -176,6 +176,13 @@ code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radiu
 .table th{position:sticky;top:0;background:var(--surface);color:var(--mut);text-align:left;padding:7px 8px;font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;font-size:11.5px}
 .table td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
 .table td.num{text-align:right;font-variant-numeric:tabular-nums}
+#usageBody .table{min-width:760px}
+#usageBody td:nth-child(7){white-space:nowrap}
+.diagnostic{min-width:200px;overflow-wrap:anywhere}
+#modelsBody .table{min-width:780px}
+#modelsBody .badge,#modelsBody td:nth-child(2){white-space:nowrap}
+#modelsBody td:first-child{min-width:120px}
+#modelsBody td:last-child{min-width:110px}
 </style>
 </head>
 <body>
@@ -347,6 +354,27 @@ code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radiu
   </div>
 </div>
 
+<!-- ================= Account models modal ================= -->
+<div class="modal-mask" id="modelsModal" onclick="maskClick(event,'modelsModal')">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modelsTitle" style="width:min(960px,100%)">
+    <div class="modal-hd">
+      <h2 id="modelsTitle" data-i18n="账号模型">账号模型</h2>
+      <button type="button" class="modal-x" onclick="closeModal('modelsModal')" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p id="modelsAccount" class="meta"></p>
+      <p class="hint" data-i18n="权益发现不等于实测可调用；未测试的模型不代表可用。测试会发送真实短请求并消耗少量额度，结果仅反映当时状态。">权益发现不等于实测可调用；未测试的模型不代表可用。测试会发送真实短请求并消耗少量额度，结果仅反映当时状态。</p>
+      <p class="hint" data-i18n="仅打开或手动刷新时查询权益。测试和启停需要管理密钥；每账号仅允许一个测试并有冷却，禁用账号或模型不可测试。策略立即阻断，CPA 模型列表同步可能稍有延迟。">仅打开或手动刷新时查询权益。测试和启停需要管理密钥；每账号仅允许一个测试并有冷却，禁用账号或模型不可测试。策略立即阻断，CPA 模型列表同步可能稍有延迟。</p>
+      <p id="modelsStatus" class="meta" role="status" aria-live="polite"></p>
+      <div id="modelsBody" class="usage-body" style="max-height:50vh;overflow-wrap:anywhere"></div>
+    </div>
+    <div class="modal-ft">
+      <button id="modelsRefresh" type="button" class="sec" onclick="refreshModels()" data-i18n="刷新模型">刷新模型</button>
+      <button type="button" class="sec" onclick="closeModal('modelsModal')" data-i18n="关闭">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div id="toasts"></div>
 
 <script>
@@ -393,6 +421,23 @@ const PANEL_EN = {
   "失败":"failed","成功":"ok","今日暂无请求":"No requests today","暂无用量记录":"No usage recorded yet",
   "天":"day","日期":"Date","失败数":"Failed","请求":"req",
   "当前账号":"Account","切换账号":"Switch account","暂无积分包":"No credit package",
+  "账号模型":"Account models","刷新模型":"Refresh models","查询中…":"Loading…",
+  "测试":"Test","测试中…":"Testing…","未测试":"Not tested","实测成功":"Test passed","实测失败":"Test failed",
+  "权益":"Benefit","限时福利":"Limited-time benefit","标准":"Standard","上下文 / 最大输出":"Context / max output","测试结果":"Test result","操作":"Actions",
+  "模型目录为空":"No models discovered","账号已移除":"Account removed",
+  "权益发现不等于实测可调用；未测试的模型不代表可用。测试会发送真实短请求并消耗少量额度，结果仅反映当时状态。":
+    "Discovery does not prove callability; untested models are not known to work. Tests send real short requests and consume a small amount of quota. Results reflect only the time of testing.",
+  "仅打开或手动刷新时查询权益。测试和启停需要管理密钥；每账号仅允许一个测试并有冷却，禁用账号或模型不可测试。策略立即阻断，CPA 模型列表同步可能稍有延迟。":
+    "Discover only on open or manual refresh. Testing and toggling require a management key. One test per account with a cooldown; disabled accounts or models cannot be tested. Policy blocks immediately; the CPA model list may sync slightly later.",
+  "失败原因":"Failure reason","上游 HTTP":"Upstream HTTP","业务码":"Business code",
+  "旧记录无详细原因，请重新测试":"No detailed reason in this old record; please test again",
+  "凭据无效":"Invalid credentials","凭据不可用":"Credentials unavailable","账号已禁用":"Account disabled",
+  "未找到账号凭据":"Account credentials not found","凭据存储不可用":"Credential store unavailable",
+  "模型已禁用":"Model disabled","请求参数无效":"Invalid request",
+  "上游认证失败":"Upstream authentication failed","上游拒绝访问":"Upstream access forbidden",
+  "模型不可用":"Model unavailable","请求限流":"Rate limited","上游服务不可用":"Upstream unavailable",
+  "请求超时":"Request timed out","请求已取消":"Request canceled","网络连接失败":"Network failure",
+  "未知失败原因":"Unknown failure reason",
   "积分数据来自码道控制台统计接口":"Credit numbers come from the CodeArts console statistics API"
 };
 const PANEL_LANGUAGE_KEY="codearts-panel-language";
@@ -408,6 +453,7 @@ function applyLanguage(){
   if(accounts.length)renderAccounts();
   // 概览里的表头、状态标签、积分包名都是运行时生成的，静态 data-i18n 覆盖不到。
   if(document.getElementById("console"))renderConsole();
+  renderModels();
 }
 document.getElementById("panelLanguage").addEventListener("change",event=>{
   panelLanguage=event.target.value;
@@ -468,8 +514,14 @@ function readUrlKey(){
 }
 function getKey(){return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey()||""}
 function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
-function showAuth(){document.getElementById("authBox").style.display="block"}
-function hideAuth(){document.getElementById("authBox").style.display="none"}
+let authRequired=false;
+function showAuth(){
+  authRequired=true;
+  document.querySelectorAll(".modal-mask.on").forEach(modal=>modal.classList.remove("on"));
+  document.getElementById("authBox").style.display="block";
+  document.getElementById("keyInput").focus?.();
+}
+function hideAuth(){authRequired=false;document.getElementById("authBox").style.display="none"}
 function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
   if(!v)return;
@@ -529,7 +581,7 @@ async function api(path,opts={}){
   if(Date.now()<authFailUntil)throw new Error("管理密钥无效或未提供");
   return callJSON(API_BASE+path,opts);
 }
-function post(path,data){return api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data||{})})}
+function post(path,data){return panelPost?panelPost(path,data||{}):api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data||{})})}
 
 /* ---------- toasts / log ---------- */
 function toast(title,kind="ok",detail=""){
@@ -555,6 +607,23 @@ function fmtDate(value){
   return isNaN(d)?String(value):d.toLocaleString();
 }
 function fmtTime(value){return value?fmtDate(value):"—"}
+
+// Only diagnostic.http_status is an upstream HTTP status; ledger status is not.
+const DIAGNOSTIC_LABELS=new Map(Object.entries({
+  auth_invalid:"凭据无效",auth_unusable:"凭据不可用",auth_disabled:"账号已禁用",
+  auth_not_found:"未找到账号凭据",auth_store_unavailable:"凭据存储不可用",
+  model_disabled:"模型已禁用",invalid_request:"请求参数无效",upstream_auth:"上游认证失败",
+  upstream_forbidden:"上游拒绝访问",model_unavailable:"模型不可用",rate_limited:"请求限流",
+  upstream_unavailable:"上游服务不可用",timeout:"请求超时",canceled:"请求已取消",
+  network:"网络连接失败",unknown:"未知失败原因"
+}));
+function diagnosticText(diagnostic){
+  if(!diagnostic)return tr("旧记录无详细原因，请重新测试");
+  const parts=[tr(DIAGNOSTIC_LABELS.get(diagnostic.category)||"未知失败原因")];
+  if(diagnostic.http_status!=null)parts.push(tr("上游 HTTP")+": "+diagnostic.http_status);
+  if(diagnostic.upstream_code)parts.push(tr("业务码")+": "+diagnostic.upstream_code);
+  return parts.join(" · ");
+}
 
 /* ---------- accounts ---------- */
 let accounts=[];
@@ -609,6 +678,7 @@ function renderCard(account){
   actions.className="card-actions";
   actions.append(
     btn(tr("积分"),e=>showCredits(index,e),""),
+    btn(tr("模型"),()=>showModels(index),"sec"),
     btn(tr("签到"),e=>checkinOne(index,e),"sec"),
     btn(tr("保活"),e=>keepaliveOne(index,e),"sec"),
     btn(account.disabled?tr("启用"):tr("禁用"),e=>toggleEnabled(index,!account.disabled,e),account.disabled?"sec":"danger"),
@@ -623,7 +693,9 @@ async function load(report,btn){
     const data=await panelReadCall("accounts");
     accounts=Array.isArray(data.results)?data.results:[];
     renderAccounts();
-    hideAuth();
+    if(modelsIndex&&!accounts.some(a=>a.auth_index===modelsIndex))closeModal("modelsModal");
+    renderModels();
+    if(!authRequired)hideAuth();
     if(report)toast(tr("刷新成功"),"ok",accounts.length+" account(s)");
   }catch(e){
     toast(tr("请求失败"),"err",e.message);
@@ -720,6 +792,100 @@ function renderCredits(data){
   return box;
 }
 
+/* ---------- per-account models: discovery is explicit, never a background probe ---------- */
+let modelsIndex="";
+const modelsCache=new Map();
+function modelState(index){
+  if(!modelsCache.has(index))modelsCache.set(index,{models:[],fetched_at:"",loaded:false,busy:false,testing:"",error:""});
+  return modelsCache.get(index);
+}
+function showModels(index){
+  modelsIndex=index;
+  openModal("modelsModal");
+  renderModels();
+  return refreshModels();
+}
+async function refreshModels(){
+  const index=modelsIndex;
+  if(!index||!accounts.some(a=>a.auth_index===index))return;
+  const state=modelState(index);
+  if(state.busy)return;
+  state.busy=true;state.error="";renderModels();
+  try{
+    const data=await panelReadCall("models",index);
+    if(data.auth_index!==index||!Array.isArray(data.models))throw new Error(tr("请求失败"));
+    state.models=data.models;state.fetched_at=data.fetched_at||"";state.loaded=true;
+  }catch(e){state.error=e.message||String(e)}
+  finally{state.busy=false;renderModels()}
+}
+function renderModels(){
+  if(!modelsIndex)return;
+  const index=modelsIndex,state=modelState(index),account=accounts.find(a=>a.auth_index===index);
+  document.getElementById("modelsAccount").textContent=tr("当前账号")+": "+accountLabel(index)+" · "+index;
+  document.getElementById("modelsRefresh").disabled=state.busy||!account;
+  document.getElementById("modelsStatus").textContent=!account?tr("账号已移除"):
+    (state.error||(state.busy?(state.testing?tr("测试中…"):tr("查询中…")):
+      (state.fetched_at?tr("更新")+": "+fmtDate(state.fetched_at):"")));
+  const box=document.getElementById("modelsBody");box.replaceChildren();
+  if(!state.models.length){
+    const empty=document.createElement("div");empty.className="usage-empty";
+    empty.textContent=state.loaded?tr("模型目录为空"):tr("暂无数据");box.append(empty);return;
+  }
+  const table=document.createElement("table");table.className="table";
+  const head=document.createElement("thead"),headRow=document.createElement("tr");
+  for(const label of ["模型","权益","上下文 / 最大输出","状态","测试结果","操作"]){
+    const th=document.createElement("th");th.textContent=tr(label);headRow.append(th);
+  }
+  head.append(headRow);table.append(head);
+  const body=document.createElement("tbody");
+  for(const model of state.models){
+    const row=document.createElement("tr");
+    const values=[model.name&&model.name!==model.id?model.name+" · "+model.id:model.id,
+      typeof model.benefit==="boolean"?tr(model.benefit?"限时福利":"标准"):"—",
+      (model.context_length||"—")+" / "+(model.max_completion_tokens||"—")];
+    for(const value of values){const td=document.createElement("td");td.textContent=value;row.append(td)}
+    const status=document.createElement("td");status.append(badge(tr(model.enabled?"已启用":"已禁用"),model.enabled?"":"disabled"));row.append(status);
+    const result=document.createElement("td");
+    if(model.test){
+      result.append(badge(tr(model.test.ok?"实测成功":"实测失败"),model.test.ok?"":"err"));
+      const detail=document.createElement("div");detail.className="meta";
+      const message=model.test.diagnostic?diagnosticText(model.test.diagnostic):
+        (model.test.message||(!model.test.ok?diagnosticText(null):""));
+      detail.textContent=fmtDate(model.test.checked_at)+" · "+(model.test.latency_ms??"—")+" ms"+(message?" · "+message:"");result.append(detail);
+    }else{result.textContent=tr("未测试")}
+    row.append(result);
+    const actions=document.createElement("td"),buttons=document.createElement("div");buttons.className="card-actions";buttons.style.marginTop="0";
+    const test=btn(tr(state.testing===model.id?"测试中…":"测试"),()=>testModel(index,model.id),"mini-btn");
+    test.disabled=state.busy||!account||account.disabled||!model.enabled;
+    const toggle=btn(tr(model.enabled?"禁用":"启用"),()=>setModelEnabled(index,model.id,!model.enabled),model.enabled?"danger":"sec");
+    toggle.disabled=state.busy||!account;
+    buttons.append(test,toggle);actions.append(buttons);row.append(actions);body.append(row);
+  }
+  table.append(body);box.append(table);
+}
+async function modelAction(index,id,enabled){
+  const state=modelState(index),account=accounts.find(a=>a.auth_index===index),model=state.models.find(m=>m.id===id);
+  const testing=enabled===undefined;
+  if(state.busy||!account||!model||(testing&&(account.disabled||!model.enabled)))return;
+  state.busy=true;state.testing=testing?id:"";state.error="";renderModels();
+  try{
+    const data=await post(testing?"/models/test":"/models/enabled",testing?{auth_index:index,model:id}:{auth_index:index,model:id,enabled});
+    if(testing){model.test=data}
+    else{
+      if(data.ok!==true||typeof data.enabled!=="boolean")throw new Error(tr("请求失败"));
+      model.enabled=data.enabled;
+    }
+  }catch(e){state.error=e.message||String(e);toast(tr("请求失败"),"err",state.error)}
+  finally{
+    // Refresh only the tested account's usage, even after a failed/ambiguous request.
+    // No discovery here, and never change another account's visible console data.
+    if(testing)await refreshConsole(false,index);
+    state.busy=false;state.testing="";renderModels();
+  }
+}
+function testModel(index,id){return modelAction(index,id)}
+function setModelEnabled(index,id,enabled){return modelAction(index,id,enabled)}
+
 /* ---------- console overview: credits donut / today tokens / usage records ----------
    数据来源有两套，面板必须让用户分得清：
    - 积分用量：码道统计接口 statistics/plugin，官方口径（周期 = 积分包有效期）。
@@ -764,6 +930,7 @@ function statOf(row){
 
 // 切换概览所用的账号（多账号时才有意义）。
 function selectConsoleAccount(index){
+  consoleState.stats=null;consoleState.usage=null;consoleState.error="";
   consoleState.index=index;
   renderConsole();
   refreshConsole(false);
@@ -778,26 +945,31 @@ async function refresh(report,btn){
 }
 
 // refreshConsole 拉取当前账号的积分统计与本地用量，任何一个失败都不影响另一个。
-async function refreshConsole(notify){
+const consoleRequests=new Map();
+async function refreshConsole(notify,targetIndex){
   const section=document.getElementById("console");
-  const index=currentAccountIndex();
+  const index=targetIndex||currentAccountIndex();
   if(!index){
     section.style.display="none";
     return;
   }
-  section.style.display="block";
+  const request={};consoleRequests.set(index,request);
+  const next={stats:null,usage:null,error:""};
   const jobs=[
     panelReadCall("stats",index).then(d=>{
       const row=(d&&Array.isArray(d.results))?d.results[0]:null;
-      consoleState.stats=statOf(row);
-      consoleState.error=(row&&row.ok===false&&consoleState.stats?consoleState.stats.error:"")||"";
-    }).catch(e=>{consoleState.error=e.message||String(e)}),
+      next.stats=statOf(row);
+      next.error=(row&&row.ok===false&&next.stats?next.stats.error:"")||"";
+    }).catch(e=>{next.error=e.message||String(e)}),
     panelReadCall("usage",index).then(d=>{
       const row=(d&&Array.isArray(d.results))?d.results[0]:null;
-      consoleState.usage=row&&row.usage?row.usage:null;
-    }).catch(e=>{if(!consoleState.error)consoleState.error=e.message||String(e)})
+      next.usage=row&&row.usage?row.usage:null;
+    }).catch(e=>{if(!next.error)next.error=e.message||String(e)})
   ];
   await Promise.all(jobs);
+  if(currentAccountIndex()!==index||consoleRequests.get(index)!==request)return;
+  Object.assign(consoleState,next);
+  section.style.display="block";
   renderConsole();
   if(notify){
     const total=consoleState.usage&&consoleState.usage.today?consoleState.usage.today.total:0;
@@ -982,11 +1154,11 @@ function renderUsageBody(){
   const headRow=document.createElement("tr");
   const headers=view==="days"
     ?[tr("日期"),tr("请求数"),tr("失败数"),tr("输入"),tr("输出"),tr("总 tokens")]
-    :[tr("时间"),tr("模型"),tr("输入"),tr("输出"),tr("总 tokens"),tr("耗时"),tr("状态")];
+    :[tr("时间"),tr("模型"),tr("输入"),tr("输出"),tr("总 tokens"),tr("耗时"),tr("状态"),tr("失败原因")];
   for(const label of headers){
     const th=document.createElement("th");
     th.textContent=label;
-    if(label!==tr("时间")&&label!==tr("模型")&&label!==tr("日期")&&label!==tr("状态"))th.className="num";
+    if(label!==tr("时间")&&label!==tr("模型")&&label!==tr("日期")&&label!==tr("状态")&&label!==tr("失败原因"))th.className="num";
     headRow.append(th);
   }
   head.append(headRow);
@@ -1021,6 +1193,11 @@ function renderUsageBody(){
         est.textContent=tr("估算");
         last.append(est);
       }
+    }
+    if(view!=="days"){
+      const reason=document.createElement("td");reason.className="diagnostic";
+      reason.textContent=row.failed?diagnosticText(row.diagnostic):"—";
+      line.append(reason);
     }
     body.append(line);
   }

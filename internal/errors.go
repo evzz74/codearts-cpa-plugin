@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,9 +19,10 @@ import (
 // pluginError lets a handler attach an HTTP status to an RPC failure so the host
 // can treat disabled, expired or missing credentials differently from outages.
 type pluginError struct {
-	code    string
-	message string
-	status  int
+	code       string
+	message    string
+	status     int
+	diagnostic *failureDiagnostic
 }
 
 func (e *pluginError) Error() string { return e.message }
@@ -38,7 +41,7 @@ func withStatus(err error, status int) error {
 		if typed.status != 0 {
 			return typed
 		}
-		return &pluginError{code: typed.code, message: typed.message, status: status}
+		return &pluginError{code: typed.code, message: typed.message, status: status, diagnostic: typed.diagnostic}
 	}
 	return &pluginError{code: "plugin_error", message: err.Error(), status: status}
 }
@@ -119,9 +122,21 @@ func refreshWithRetry(ctx context.Context, cfg upstream.LoginConfig, acct *Auth)
 			}
 		}
 		token, err := refreshCodeartsToken(ctx, cfg, acct)
+		if token != nil && token.RefreshToken != "" {
+			// A response can rotate the token and still fail to issue STS.
+			acct.RefreshToken = token.RefreshToken
+		}
+		if err == nil && token != nil {
+			if token.Credentials.SecurityToken == "" {
+				token.Credentials = upstream.Credentials{SecurityToken: token.Credential.SecurityToken, AccessKeyID: token.Credential.Access, SecretAccessKey: token.Credential.Secret, Expiration: token.Credential.ExpiresAt}
+			}
+			if token.Credentials.SecurityToken == "" || token.Credentials.AccessKeyID == "" || token.Credentials.SecretAccessKey == "" {
+				err = &upstream.ApiError{Status: http.StatusBadGateway, Message: "missing STS credentials"}
+			}
+		}
 		if err != nil {
 			lastErr = err
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || !retryableRefreshError(err) {
 				break
 			}
 			continue
@@ -129,14 +144,22 @@ func refreshWithRetry(ctx context.Context, cfg upstream.LoginConfig, acct *Auth)
 		if token == nil {
 			return nil, newPluginError("refresh_unavailable", http.StatusBadGateway, "refresh: missing token response")
 		}
-		if token.RefreshToken != "" {
-			// The upstream rotates refresh_token; record it so a caller that
-			// retries this same Auth object keeps using the live token.
-			acct.RefreshToken = token.RefreshToken
-		}
 		return token, nil
 	}
 	return nil, lastErr
+}
+
+func retryableRefreshError(err error) bool {
+	var expired *upstream.RefreshTokenExpiredError
+	if errors.As(err, &expired) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var api *upstream.ApiError
+	if errors.As(err, &api) {
+		return retryableStatus(api.Status)
+	}
+	var network net.Error
+	return errors.As(err, &network)
 }
 
 // The host auth store RPCs are package-level variables so tests can stub them.

@@ -57,6 +57,7 @@ func managementRegister(raw []byte) ([]byte, error) {
 	for _, spec := range [][2]string{
 		{"GET", "/accounts"}, {"GET", "/credentials"}, {"POST", "/enabled"},
 		{"GET", "/credits"}, {"GET", "/stats"}, {"GET", "/usage"},
+		{"GET", "/models"}, {"POST", "/models/test"}, {"POST", "/models/enabled"},
 		{"POST", "/checkin"}, {"POST", "/keepalive"},
 		{"POST", "/import"}, {"POST", "/oauth/start"}, {"POST", "/oauth/poll"},
 		{"POST", "/oauth/import-callback"},
@@ -101,6 +102,7 @@ func managementAuthorized(r managementRequest) bool {
 }
 
 type accountFile struct {
+	ID        string `json:"id"`
 	AuthIndex string `json:"auth_index"`
 	Name      string `json:"name"`
 }
@@ -258,6 +260,8 @@ func managementBootstrap(action string, query url.Values) []byte {
 // key. Only operations that cannot leak credentials are allowed here.
 func managementReadProxy(op, authIndex string) []byte {
 	switch op {
+	case "models":
+		return managementModels(authIndex)
 	case "accounts", "credits", "stats", "usage":
 		return managementAccountAction("/"+op, authIndex)
 	default:
@@ -305,6 +309,7 @@ func managementHandle(raw []byte) ([]byte, error) {
 		CallbackURL string          `json:"callback_url"`
 		JSON        json.RawMessage `json:"json"`
 		Enabled     *bool           `json:"enabled"`
+		Model       string          `json:"model"`
 	}
 	if len(r.Body) > 1<<20 {
 		return managementJSON(413, map[string]string{"error": "request too large"}), nil
@@ -319,6 +324,15 @@ func managementHandle(raw []byte) ([]byte, error) {
 		body.AuthIndex = r.Query.Get("index")
 	}
 	switch {
+	case r.Method == http.MethodGet && action == "/models":
+		return managementModels(body.AuthIndex), nil
+	case r.Method == http.MethodPost && action == "/models/enabled":
+		if body.Enabled == nil {
+			return managementJSON(http.StatusBadRequest, map[string]string{"error": "enabled is required"}), nil
+		}
+		return managementModelEnabled(body.AuthIndex, body.Model, *body.Enabled), nil
+	case r.Method == http.MethodPost && action == "/models/test":
+		return managementModelTest(body.AuthIndex, body.Model), nil
 	case r.Method == "POST" && action == "/oauth/start":
 		result, err := handleLoginStart(nil)
 		if err != nil {
@@ -426,8 +440,7 @@ func managementAccountAction(action, authIndex string) []byte {
 					item["stats"] = stats
 				}
 			case "/usage":
-				// Local ledger: what this deployment actually served, per day and
-				// per model, plus the newest request records.
+				migrateLegacyUsage(f, a)
 				item["usage"] = usageLedgerSnapshot(f.AuthIndex, 50)
 			case "/credits":
 				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -455,11 +468,15 @@ func managementAccountAction(action, authIndex string) []byte {
 					item["message"] = "refresh credentials missing"
 					break
 				}
-				request, _ := json.Marshal(authRefreshRequest{StorageJSON: storage})
+				request, _ := json.Marshal(authRefreshRequest{AuthID: f.ID, StorageJSON: storage})
 				updated, e := handleRefreshAuth(request)
 				if e != nil {
 					item["ok"] = false
-					item["message"] = "refresh unavailable"
+					item["message"] = "refresh temporarily unavailable"
+					item["error_code"] = errorCode(e)
+					if errorCode(e) == "auth_expired" || errorCode(e) == "refresh_token_expired" {
+						item["message"] = "refresh token rejected; sign in again"
+					}
 					break
 				}
 				response, e := hostUnwrap(updated)
@@ -471,7 +488,7 @@ func managementAccountAction(action, authIndex string) []byte {
 					Auth pluginAuthData `json:"auth"`
 				}
 				_ = json.Unmarshal(response, &refreshed)
-				if _, e = hostAuthSave(map[string]any{"name": f.Name, "json": json.RawMessage(refreshed.Auth.StorageJSON)}); e != nil {
+				if _, e = saveRefreshedAccount(f, refreshed.Auth); e != nil {
 					item["ok"] = false
 					item["message"] = "could not save refresh"
 					break
@@ -495,6 +512,8 @@ func managementEnabled(authIndex string, enabled bool) []byte {
 	if len(files) == 0 {
 		return managementJSON(404, map[string]string{"error": "account not found"})
 	}
+	unlock := lockAccount(files[0].Name)
+	defer unlock()
 	a, storage, err := accountStorage(files[0])
 	if err != nil || a == nil {
 		return managementJSON(400, map[string]string{"error": "invalid account"})

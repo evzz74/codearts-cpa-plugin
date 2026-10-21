@@ -105,7 +105,7 @@ plugins:
 ```
 
 重启 CPA 后，`GET /v1/models` 应能看到 CodeArts 模型（默认静态列表：
-`GLM-5.2`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`deepseek-v4-flash-0731`、
+`GLM-5.3`、`GLM-5.2`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`deepseek-v4-flash-0731`、
 `deepseek-v4-pro-0813`、`glm-5.3-flash`；有账号后按账号上报的目录覆盖）。
 
 在 CPA 管理端插件页可以看到 **CodeArts** 资源菜单，点开就是账号面板。

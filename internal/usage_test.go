@@ -284,32 +284,34 @@ func (fakeError) Error() string { return "upstream down" }
 
 var errFake = fakeError{}
 
-// TestUsageHookRecordsHostRecords covers the host-driven path (usage.handle):
-// records from other providers are ignored, CodeArts records are counted once.
-func TestUsageHookRecordsHostRecords(t *testing.T) {
+func TestUsageHookDoesNotDuplicateExecutorRecords(t *testing.T) {
 	oldLedger := ledger
 	t.Cleanup(func() { ledger = oldLedger })
 	ledger = newTestLedger(t)
-
-	other, _ := json.Marshal(map[string]any{"Provider": "claude", "Model": "x", "Detail": map[string]any{"TotalTokens": 100}})
-	handleUsageRecord(other)
-	if today, _, _, _, _ := ledger.snapshot("default", 10, 62); today.Total != 0 {
-		t.Fatalf("foreign provider was counted: %+v", today)
+	ledger.record(usageEntry{Device: "idx-1", Total: 42})
+	for _, provider := range []string{"codearts", "claude", ""} {
+		raw, _ := json.Marshal(map[string]any{"Provider": provider, "AuthIndex": "idx-1", "RequestedAt": ledger.now(), "Detail": map[string]any{"TotalTokens": 42}})
+		handleUsageRecord(raw)
 	}
-
-	own, _ := json.Marshal(map[string]any{
-		"Provider": "codearts", "Model": "glm-5.2", "AuthIndex": "idx-1",
-		"Detail": map[string]any{"InputTokens": 30, "OutputTokens": 12, "TotalTokens": 42},
-	})
-	handleUsageRecord(own)
 	today, _, _, records, _ := ledger.snapshot("idx-1", 10, 62)
 	if today.Total != 42 || len(records) != 1 {
-		t.Fatalf("host record not counted: %+v / %d records", today, len(records))
+		t.Fatalf("duplicate usage: %+v %d", today, len(records))
 	}
+}
 
-	// 空记录（无 token 也无失败）不该进入账本。
-	handleUsageRecord([]byte(`{"Provider":"codearts","Model":"glm-5.2"}`))
-	if _, _, _, records, _ := ledger.snapshot("idx-1", 10, 62); len(records) != 1 {
-		t.Fatalf("zero-token record was stored: %d records", len(records))
+func TestLedgerKeepsZeroTokenSuccess(t *testing.T) {
+	l := newTestLedger(t)
+	l.record(usageEntry{Device: "idx-1"})
+	today, _, _, records, _ := l.snapshot("idx-1", 10, 62)
+	if today.Requests != 1 || today.Failed != 0 || len(records) != 1 || today.Total != 0 {
+		t.Fatalf("zero usage lost: %+v", today)
+	}
+	in, out, _, total, ok := usageCountsFromRaw(map[string]any{"prompt_tokens": float64(0), "completion_tokens": float64(0), "total_tokens": float64(0)})
+	if !ok || in != 0 || out != 0 || total != 0 {
+		t.Fatal("explicit zero usage must not be estimated")
+	}
+	_, _, reason, total, ok := usageCountsFromRaw(map[string]any{"prompt_tokens": float64(5), "completion_tokens": float64(10), "completion_tokens_details": map[string]any{"reasoning_tokens": float64(7)}})
+	if !ok || total != 15 || reason != 7 {
+		t.Fatalf("reasoning counted twice: %d %d", total, reason)
 	}
 }

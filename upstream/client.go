@@ -29,10 +29,12 @@ import (
 
 // ApiError 带业务 code 的上游错误。
 type ApiError struct {
-	Code    int
-	Status  int
-	Message string
-	Path    string
+	Code         int
+	Status       int
+	BusinessCode string // 上游业务码；不参与既有状态映射或重试判断。
+	HTTPStatus   int    // 真实 HTTP 响应状态；0 表示未知。
+	Message      string
+	Path         string
 }
 
 func (e *ApiError) Error() string {
@@ -304,20 +306,23 @@ func (c *Client) requestToken(ctx context.Context, cfg LoginConfig, form url.Val
 	url := cfg.STSHost + EpOAuthTokens
 	proof, err := signDpopProof(kp, url)
 	if err != nil {
-		return nil, fmt.Errorf("dpop proof: %w", err)
+		return nil, fmt.Errorf("token endpoint: cannot sign DPoP proof")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token endpoint: invalid request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("DPoP", proof)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &ApiError{Status: http.StatusBadGateway, Message: "token endpoint transport failed", Path: EpOAuthTokens}
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if readErr != nil {
+		return nil, &ApiError{Status: http.StatusBadGateway, HTTPStatus: resp.StatusCode, Message: "token endpoint response read failed", Path: EpOAuthTokens}
+	}
 	if resp.StatusCode >= 400 {
 		// 刷新通道的「终态失效」要单独识别：继续重试没有意义，必须重新登录。
 		if form.Get("grant_type") == "refresh_token" {
@@ -328,17 +333,16 @@ func (c *Client) requestToken(ctx context.Context, cfg LoginConfig, form url.Val
 				strings.Contains(code, "InvalidDPoPHeader") || strings.Contains(code, "invalid client id") ||
 				strings.Contains(strings.ToLower(tokenErr.ErrorMessage), "has been used") {
 				return nil, &RefreshTokenExpiredError{
-					Status: resp.StatusCode,
-					Message: fmt.Sprintf("refresh_token expired or rejected: http=%d error=%s code=%s msg=%s",
-						resp.StatusCode, tokenErr.Error, tokenErr.ErrorCode, truncateStr(tokenErr.ErrorMessage, 160)),
+					Status:  resp.StatusCode,
+					Message: "refresh token expired or rejected; sign in again",
 				}
 			}
 		}
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: EpOAuthTokens}
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, HTTPStatus: resp.StatusCode, Message: "token endpoint rejected request", Path: EpOAuthTokens}
 	}
 	var out TokenResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("parse token response: %w body=%s", err, truncateStr(string(raw), 200))
+		return nil, &ApiError{Status: http.StatusBadGateway, HTTPStatus: resp.StatusCode, Message: "invalid token response", Path: EpOAuthTokens}
 	}
 	if out.Credentials.SecurityToken == "" {
 		// 兼容 ticket/旧通道字段（legacy）
@@ -349,9 +353,11 @@ func (c *Client) requestToken(ctx context.Context, cfg LoginConfig, form url.Val
 				SecurityToken:   out.Credential.SecurityToken,
 				Expiration:      out.Credential.ExpiresAt,
 			}
-			return &out, nil
 		}
-		return nil, fmt.Errorf("token response missing credentials: %s", truncateStr(string(raw), 200))
+	}
+	if out.Credentials.SecurityToken == "" || out.Credentials.AccessKeyID == "" || out.Credentials.SecretAccessKey == "" {
+		// Preserve rotations even when the STS portion could not be issued.
+		return &out, &ApiError{Status: http.StatusBadGateway, HTTPStatus: resp.StatusCode, Message: "token response missing STS credentials", Path: EpOAuthTokens}
 	}
 	return &out, nil
 }
@@ -588,7 +594,8 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 	if resp.StatusCode >= 400 {
 		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(rawBody), 200), Path: EpChatV2}
+		code, _, _ := responseErrorDetails(string(rawBody), "")
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, BusinessCode: code, HTTPStatus: resp.StatusCode, Message: truncateStr(string(rawBody), 200), Path: EpChatV2}
 	}
 	return preflightSSE(resp.Body)
 }
@@ -604,13 +611,19 @@ type replayReadCloser struct {
 func preflightSSE(body io.ReadCloser) (io.ReadCloser, error) {
 	br := bufio.NewReaderSize(body, 1<<20)
 	var prefix bytes.Buffer
+	var event string
 	for prefix.Len() < 2<<20 {
 		line, err := br.ReadString('\n')
 		prefix.WriteString(line)
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "event:") {
+			event = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+		} else if trimmed == "" {
+			event = ""
+		}
 		if strings.HasPrefix(trimmed, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-			if apiErr := embeddedSSEError(data); apiErr != nil {
+			if apiErr := embeddedSSEEventError(data, event); apiErr != nil {
 				_ = body.Close()
 				return nil, apiErr
 			}
@@ -629,18 +642,14 @@ func preflightSSE(body io.ReadCloser) (io.ReadCloser, error) {
 
 // embeddedSSEError 识别 HTTP 200 里内嵌的上游业务错误。
 func embeddedSSEError(data string) *ApiError {
-	if data == "" || data == "[DONE]" {
+	return embeddedSSEEventError(data, "")
+}
+
+func embeddedSSEEventError(data, event string) *ApiError {
+	code, message, isError := responseErrorDetails(data, event)
+	if !isError {
 		return nil
 	}
-	var payload map[string]any
-	if json.Unmarshal([]byte(data), &payload) != nil {
-		return nil
-	}
-	code, _ := payload["error_code"].(string)
-	if code == "" || code == "0" {
-		return nil
-	}
-	message, _ := payload["error_msg"].(string)
 	combined := strings.TrimSpace(code + " " + message)
 	status := http.StatusBadGateway
 	low := strings.ToLower(combined)
@@ -656,7 +665,7 @@ func embeddedSSEError(data string) *ApiError {
 		// 请求参数无效（实测：tool_choice 对象形态触发）：客户端问题，不是账号故障。
 		status = http.StatusBadRequest
 	}
-	return &ApiError{Code: status, Status: status, Message: truncateStr(combined, 300), Path: EpChatV2}
+	return &ApiError{Code: status, Status: status, BusinessCode: code, HTTPStatus: http.StatusOK, Message: truncateStr(combined, 300), Path: EpChatV2}
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +698,8 @@ func (c *Client) doJSON(ctx context.Context, method, baseURL, path string, heade
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode >= 400 {
-		return &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: path}
+		code, _, _ := responseErrorDetails(string(raw), "")
+		return &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, BusinessCode: code, HTTPStatus: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: path}
 	}
 	if out != nil {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -801,7 +811,7 @@ func signedGet(urlStr string, cred SignCredential, agentType string) ([]byte, er
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: urlStr}
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, HTTPStatus: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: urlStr}
 	}
 	return raw, nil
 }
@@ -831,7 +841,7 @@ func (c *Client) getSigned(ctx context.Context, urlStr string, cred SignCredenti
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: req.URL.Path}
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, HTTPStatus: resp.StatusCode, Message: truncateStr(string(raw), 300), Path: req.URL.Path}
 	}
 	return raw, nil
 }
