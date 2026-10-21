@@ -142,7 +142,7 @@ class Element {
   get lastElementChild(){return this.children.at(-1)}
 }
 const elements=new Map();
-const document={documentElement:new Element(),getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)},createElement:tag=>new Element(tag),querySelectorAll:selector=>selector===".modal-mask.on"?[...elements.values()].filter(el=>el.classList.contains("on")):[],hidden:false};
+const document={documentElement:new Element(),addEventListener(){},getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)},createElement:tag=>new Element(tag),querySelectorAll:selector=>selector===".modal-mask.on"?[...elements.values()].filter(el=>el.classList.contains("on")):[],hidden:false};
 const storage=new Map();
 const sessionStorage={getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
 const localStorage={getItem:()=>null,setItem:()=>{}};
